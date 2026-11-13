@@ -58,7 +58,7 @@ func (s *Server) assetsHandler() http.Handler {
 		default:
 			w.Header().Set("Content-Type", "application/octet-stream")
 		}
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(b)
 	})
 }
