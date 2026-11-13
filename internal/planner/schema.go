@@ -3,10 +3,11 @@ package planner
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"youkai/internal/gate"
-	"youkai/internal/loop"
+	"youkai/internal/ledger"
 )
 
 // completion is the strict output schema. Anything that does not fit is refused;
@@ -14,91 +15,92 @@ import (
 type completion struct {
 	Intents []struct {
 		Goal         string         `json:"goal"`
-		Action       string         `json:"action"`
+		Capability   string         `json:"capability"`
+		Action       string         `json:"action"` // tolerated alias
 		Args         map[string]any `json:"args"`
 		Rationale    string         `json:"rationale"`
 		ExpectedFact string         `json:"expected_fact"`
 	} `json:"intents"`
 }
 
-// Rejection records a proposal that was refused, and why. It goes into the
-// archive so an injected or overreaching suggestion is evidence, not silence.
+// Rejection records a proposal that was refused, and why. It is archived so an
+// injected or overreaching suggestion becomes evidence, not silence.
 type Rejection struct {
-	Action string `json:"action"`
-	Reason string `json:"reason"`
+	Capability string `json:"capability"`
+	Reason     string `json:"reason"`
 }
 
 // parseCompletion turns model text into typed intents.
 //
-// Rules, in order:
-//  1. the text must contain exactly one JSON object -> otherwise refuse everything
-//  2. the action must be on the read-only whitelist
-//  3. the action must classify as tier 1
-//  4. rationales are encouraged but presence is not required for read-only work
+//  1. the text must contain one JSON object -> otherwise refuse everything
+//  2. the capability must be on the read-only whitelist
+//  3. it must classify as tier 1
 //
 // A proposal that fails 2 or 3 is DROPPED, not parked. Parking it would let
-// attacker-controlled page text (via a poisoned fact) wedge the autonomous loop
+// attacker-controlled page text (via a poisoned fact) wedge the autonomous engine
 // at needs_approval forever - a denial of service on the brain. Dropping keeps
-// the guarantee that matters: an injected proposal cannot cause execution, and
-// cannot change the loop's control flow. The archive still records it.
-func parseCompletion(text string, allowed []string) ([]loop.IntentSpec, []Rejection, error) {
+// the guarantee that matters: an injected proposal cannot cause execution and
+// cannot change the engine's control flow. The archive still records it.
+func parseCompletion(text string, allowed []string) ([]ledger.IntentSpec, []Rejection, error) {
 	body, err := extractJSON(text)
 	if err != nil {
 		return nil, nil, err
 	}
 	var c completion
-	dec := json.NewDecoder(strings.NewReader(body))
-	if err := dec.Decode(&c); err != nil {
+	if err := json.Unmarshal([]byte(body), &c); err != nil {
 		return nil, nil, fmt.Errorf("completion is not the required schema: %w", err)
 	}
 	if len(c.Intents) == 0 {
 		return nil, nil, fmt.Errorf("completion contains no intents")
 	}
-
 	allow := make(map[string]bool, len(allowed))
 	for _, a := range allowed {
 		allow[a] = true
 	}
 
-	var out []loop.IntentSpec
+	var out []ledger.IntentSpec
 	var rejected []Rejection
 	seen := map[string]bool{}
 	for _, in := range c.Intents {
-		action := strings.TrimSpace(in.Action)
-		if action == "" {
-			rejected = append(rejected, Rejection{Action: action, Reason: "empty action"})
+		capability := strings.TrimSpace(in.Capability)
+		if capability == "" {
+			capability = strings.TrimSpace(in.Action)
+		}
+		if capability == "" {
+			rejected = append(rejected, Rejection{Reason: "empty capability"})
 			continue
 		}
-		if !allow[action] {
+		if !allow[capability] {
 			rejected = append(rejected, Rejection{
-				Action: action,
-				Reason: "not on the read-only whitelist; the model may only propose read-only evidence gathering",
+				Capability: capability,
+				Reason:     "not on the read-only whitelist; the model may only propose read-only evidence gathering",
 			})
 			continue
 		}
-		if tier := gate.Classify(action, in.Args); !tier.AutonomousOK() {
+		dec := gate.Explain(capability, in.Args)
+		if !dec.Tier.AutonomousOK() {
 			rejected = append(rejected, Rejection{
-				Action: action,
-				Reason: "classified " + tier.String() + "; the loop never executes tier>=2, and a model proposal cannot open that door",
+				Capability: capability,
+				Reason:     "classified " + dec.Tier.String() + ": the engine never runs tier>=2, and a model proposal cannot open that door",
 			})
 			continue
 		}
-		key := action + "|" + canonicalArgs(in.Args)
+		key := capability + "|" + ledger.CanonicalArgs(in.Args)
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-
 		args := in.Args
 		if args == nil {
 			args = map[string]any{}
 		}
-		out = append(out, loop.IntentSpec{
-			Goal:         strings.TrimSpace(in.Goal),
-			Action:       action,
+		out = append(out, ledger.IntentSpec{
+			Capability:   capability,
 			Args:         args,
+			Tier:         int(dec.Tier),
 			Rationale:    strings.TrimSpace(in.Rationale),
 			ExpectedFact: strings.TrimSpace(in.ExpectedFact),
+			GateReason:   dec.Reason,
 			Inferred:     true,
 		})
 	}
@@ -115,7 +117,6 @@ func extractJSON(text string) (string, error) {
 	if s == "" {
 		return "", fmt.Errorf("empty completion")
 	}
-	// Strip a fenced block if present.
 	if i := strings.Index(s, "```"); i >= 0 {
 		rest := s[i+3:]
 		rest = strings.TrimPrefix(rest, "json")
@@ -129,9 +130,7 @@ func extractJSON(text string) (string, error) {
 	if start < 0 {
 		return "", fmt.Errorf("completion contains no JSON object")
 	}
-	depth := 0
-	inString := false
-	escaped := false
+	depth, inString, escaped := 0, false, false
 	for i := start; i < len(s); i++ {
 		ch := s[i]
 		if inString {
@@ -160,13 +159,4 @@ func extractJSON(text string) (string, error) {
 	return "", fmt.Errorf("completion JSON object is not balanced")
 }
 
-func canonicalArgs(args map[string]any) string {
-	if len(args) == 0 {
-		return "{}"
-	}
-	b, err := json.Marshal(args)
-	if err != nil {
-		return fmt.Sprint(args)
-	}
-	return string(b)
-}
+func env(key string) string { return os.Getenv(key) }

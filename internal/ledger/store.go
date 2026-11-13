@@ -195,11 +195,12 @@ func (s *Store) AuditStats(ctx context.Context, engagement string) (allowed, blo
 
 // IngestResult reports what landed.
 type IngestResult struct {
-	FactIDs    []int64 `json:"fact_ids"`
-	NewFacts   int     `json:"new_facts"`
-	Deduped    int     `json:"deduped_facts"`
-	FindingIDs []int64 `json:"finding_ids"`
-	AssetIDs   []int64 `json:"asset_ids"`
+	FactIDs         []int64 `json:"fact_ids"`
+	NewFacts        int     `json:"new_facts"`
+	Deduped         int     `json:"deduped_facts"`
+	DedupedFindings int     `json:"deduped_findings"`
+	FindingIDs      []int64 `json:"finding_ids"`
+	AssetIDs        []int64 `json:"asset_ids"`
 }
 
 // Ingest writes an observation. Idempotent on facts; findings are append-only.
@@ -258,7 +259,7 @@ func (s *Store) Ingest(ctx context.Context, engagementID int64, runID *int64, in
 			VALUES ($1,$2,$3,$4,$5,$6)
 			ON CONFLICT (engagement_id, dedupe_key) DO NOTHING
 			RETURNING id`,
-			engagementID, f.Statement, ev, f.Tags, key, runID).Scan(&id)
+			engagementID, f.Statement, ev, nonNilStrings(f.Tags), key, runID).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Already known: idempotent, and the refusal is visible in the counter.
 			res.Deduped++
@@ -288,10 +289,17 @@ func (s *Store) Ingest(ctx context.Context, engagementID int64, runID *int64, in
 			ev = []byte("{}")
 		}
 		var id int64
+		fkey := Hash(f.Title, f.Kind, f.Where)
 		err = tx.QueryRow(ctx, `
-			INSERT INTO findings (engagement_id, title, severity, kind, where_, detail, evidence, tags)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-			engagementID, f.Title, NormaliseSeverity(f.Severity), f.Kind, f.Where, f.Detail, ev, f.Tags).Scan(&id)
+			INSERT INTO findings (engagement_id, title, severity, kind, where_, detail, evidence, tags, dedupe_key)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			ON CONFLICT (engagement_id, dedupe_key) DO NOTHING
+			RETURNING id`,
+			engagementID, f.Title, NormaliseSeverity(f.Severity), f.Kind, f.Where, f.Detail, ev, nonNilStrings(f.Tags), fkey).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			res.DedupedFindings++
+			continue // same candidate at the same place: already on record
+		}
 		if err != nil {
 			return res, fmt.Errorf("ledger: insert finding: %w", err)
 		}
@@ -353,6 +361,11 @@ func kindFromAnchor(value string) string {
 	}
 }
 
+// UpsertAsset inserts or enriches an asset vertex and returns its id.
+func (s *Store) UpsertAsset(ctx context.Context, engagementID int64, seed AssetSeed) (int64, error) {
+	return upsertAsset(ctx, s.pool, engagementID, seed)
+}
+
 // ---- intents ---------------------------------------------------------------
 
 // IntentSpec is a typed next step before it is stored.
@@ -389,7 +402,7 @@ func (s *Store) EnsureIntent(ctx context.Context, engagementID int64, spec Inten
 		          approved, fingerprint, rationale, expected_fact, provenance, inferred,
 		          gate_reason, trace, deps, created_at`,
 		engagementID, spec.Capability, args, spec.Tier, StatusTodo, spec.RequiresApproval, fp,
-		spec.Rationale, spec.ExpectedFact, spec.Provenance, spec.Inferred, spec.GateReason, spec.Deps).
+		spec.Rationale, spec.ExpectedFact, spec.Provenance, spec.Inferred, spec.GateReason, nonNilIDs(spec.Deps)).
 		Scan(&it.ID, &it.EngagementID, &it.Capability, &args, &it.Tier, &it.Status,
 			&it.RequiresApproval, &it.Approved, &it.Fingerprint, &it.Rationale, &it.ExpectedFact,
 			&it.Provenance, &it.Inferred, &it.GateReason, &it.Trace, &it.Deps, &it.CreatedAt)
@@ -546,6 +559,28 @@ func (s *Store) ApproveIntent(ctx context.Context, engagementID, intentID int64,
 		return Approval{}, fmt.Errorf("approval: flip approved: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
+		return Approval{}, err
+	}
+	return ap, nil
+}
+
+// PeekApproval returns the unconsumed approval for an intent WITHOUT consuming it.
+//
+// The execute route validates the operator and the high-authorisation record
+// first, and only then consumes: a failed precondition must not burn the single
+// approval a human granted.
+func (s *Store) PeekApproval(ctx context.Context, engagementID, intentID int64) (Approval, error) {
+	var ap Approval
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, intent_id, fingerprint, operator, basis, high_auth_path, high_auth_nonce, created_at, consumed_at
+		  FROM approvals
+		 WHERE engagement_id=$1 AND intent_id=$2 AND consumed_at IS NULL
+		 ORDER BY id DESC LIMIT 1`, engagementID, intentID).
+		Scan(&ap.ID, &ap.IntentID, &ap.Fingerprint, &ap.Operator, &ap.Basis, &ap.HighAuthPath, &ap.HighAuthNonce, &ap.CreatedAt, &ap.ConsumedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Approval{}, fmt.Errorf("approval: intent #%d has no unconsumed approval", intentID)
+	}
+	if err != nil {
 		return Approval{}, err
 	}
 	return ap, nil
@@ -932,4 +967,20 @@ func nullableJSON(raw json.RawMessage) any {
 		return nil
 	}
 	return []byte(raw)
+}
+
+// nonNilStrings keeps pgx from writing NULL into a NOT NULL text[] column.
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// nonNilIDs is the same for BIGINT[].
+func nonNilIDs(s []int64) []int64 {
+	if s == nil {
+		return []int64{}
+	}
+	return s
 }

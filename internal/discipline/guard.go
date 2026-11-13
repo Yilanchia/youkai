@@ -19,9 +19,12 @@ import (
 
 // Auditor receives one row per attempted request. The ledger implements it.
 //
-// Auditing is fail-closed: if the auditor returns an error, the request is NOT
-// sent. An unaudited request is worse than a missing one - it is evidence you
-// cannot defend.
+// The audit row is written when the outcome is known (as Fairy does), and the
+// write is checked: if it fails, the response is discarded and the guard returns
+// an error, so nothing lands in the ledger that has no audit trail. The residual
+// window is one request whose bytes left the machine but could not be recorded;
+// the alternative (pre-send rows in an append-only table) would leave every row
+// permanently incomplete.
 type Auditor interface {
 	Record(ctx context.Context, ev AuditEvent) error
 }
@@ -544,15 +547,14 @@ func SanitizeHeaders(h http.Header) map[string]string {
 		lk := strings.ToLower(k)
 		switch lk {
 		case "set-cookie":
-			names := make([]string, 0, len(v))
+			// Keep the cookie NAME and its attributes; redact only the value.
+			// A cookie-flag check needs HttpOnly/Secure/SameSite to exist in the
+			// evidence, and the value is the only secret part.
+			redacted := make([]string, 0, len(v))
 			for _, c := range v {
-				if name, _, ok := strings.Cut(c, "="); ok {
-					names = append(names, strings.TrimSpace(name)+"=<redacted>")
-				} else {
-					names = append(names, "<redacted>")
-				}
+				redacted = append(redacted, redactSetCookie(c))
 			}
-			out[k] = strings.Join(names, "; ")
+			out[k] = strings.Join(redacted, "; ")
 		case "authorization", "proxy-authorization", "cookie":
 			out[k] = "<redacted>"
 		default:
@@ -560,6 +562,36 @@ func SanitizeHeaders(h http.Header) map[string]string {
 		}
 	}
 	return out
+}
+
+// redactSetCookie keeps the name and flags, drops the value.
+//
+// "sid=<redacted>; HttpOnly; Secure; SameSite=Strict" is exactly what a
+// cookie-flag finding needs to cite, and it is not a credential.
+func redactSetCookie(raw string) string {
+	parts := strings.Split(raw, ";")
+	if len(parts) == 0 {
+		return "<redacted>"
+	}
+	head := strings.TrimSpace(parts[0])
+	name := head
+	if n, _, ok := strings.Cut(head, "="); ok {
+		name = strings.TrimSpace(n)
+	}
+	out := []string{name + "=<redacted>"}
+	for _, attr := range parts[1:] {
+		attr = strings.TrimSpace(attr)
+		if attr == "" {
+			continue
+		}
+		// An attribute value can be sensitive (rare), a flag name cannot.
+		if an, av, ok := strings.Cut(attr, "="); ok {
+			out = append(out, strings.TrimSpace(an)+"="+strings.TrimSpace(av))
+		} else {
+			out = append(out, attr)
+		}
+	}
+	return strings.Join(out, "; ")
 }
 
 func resolveLocation(base, loc string) (string, error) {

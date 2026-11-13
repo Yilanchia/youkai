@@ -287,6 +287,13 @@ func patternMatches(pattern, host, port string) bool {
 	if i := strings.Index(pat, "://"); i >= 0 {
 		pat = pat[i+3:]
 	}
+	// CIDR first: its slash is not a path separator.
+	if strings.Contains(pat, "/") {
+		if _, network, err := net.ParseCIDR(pat); err == nil {
+			ip := net.ParseIP(host)
+			return ip != nil && network.Contains(ip)
+		}
+	}
 	if i := strings.IndexByte(pat, '/'); i >= 0 {
 		pat = pat[:i]
 	}
@@ -296,16 +303,6 @@ func patternMatches(pattern, host, port string) bool {
 	}
 	if wantPort != "" && wantPort != port {
 		return false
-	}
-
-	// CIDR.
-	if strings.Contains(pat, "/") {
-		_, network, err := net.ParseCIDR(pat)
-		if err != nil {
-			return false
-		}
-		ip := net.ParseIP(host)
-		return ip != nil && network.Contains(ip)
 	}
 	// Wildcard subdomain: *.example.com matches a.example.com, not example.com.
 	if strings.HasPrefix(pat, "*.") {
@@ -392,4 +389,48 @@ func CleanPath(p string) string {
 		clean += "/"
 	}
 	return clean
+}
+
+// NamesHost reports whether any include pattern names this host, ignoring the
+// port. Used by the dial layer: the port was already validated at URL level, and
+// a connection has no port to compare in the same way a pattern might.
+func (s *Scope) NamesHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, pat := range s.Exclude {
+		if patternMatchesHostOnly(pat, host) {
+			return false
+		}
+	}
+	for _, pat := range s.Include {
+		if patternMatchesHostOnly(pat, host) {
+			return true
+		}
+	}
+	return false
+}
+
+// patternMatchesHostOnly applies a pattern to a host with the port ignored.
+func patternMatchesHostOnly(pattern, host string) bool {
+	pat := strings.ToLower(strings.TrimSpace(pattern))
+	if i := strings.Index(pat, "://"); i >= 0 {
+		pat = pat[i+3:]
+	}
+	// CIDR first: its slash is not a path separator.
+	if strings.Contains(pat, "/") {
+		if _, network, err := net.ParseCIDR(pat); err == nil {
+			ip := net.ParseIP(host)
+			return ip != nil && network.Contains(ip)
+		}
+	}
+	if i := strings.IndexByte(pat, '/'); i >= 0 {
+		pat = pat[:i]
+	}
+	if h, _, err := net.SplitHostPort(pat); err == nil {
+		pat = h
+	}
+	if strings.HasPrefix(pat, "*.") {
+		suffix := pat[1:]
+		return strings.HasSuffix(host, suffix) && len(host) > len(suffix)
+	}
+	return host == pat
 }

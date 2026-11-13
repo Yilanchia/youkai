@@ -5,38 +5,25 @@
 本地只读靶场,给端到端验收用。起在 `127.0.0.1:<port>`:
 
 - `/.git/config` 返回 200 + `[core]` 段 → 触发 `git 配置可读` fact
-- `/search?q=...` 把参数原样回显 → 让 Fairy 的 `web_scan` 产出 reflection 候选,
-  进而触发 youkai 的档 2 停点(`web_param`)
+- `/search?q=...` 把参数原样回显 → 让 `scan` 产出 reflection 候选,
+  进而触发引擎的档 2 停点(`param`)
 
 ```powershell
 python scripts\lab-target.py 18080
 ```
 
-## `mcp-call.cjs`
+## `acceptance-v02.ps1`
 
-直连一只手的 MCP stdio,调用一个工具。用来扮演"人"的那一侧
-(立 scope 护照、建 high-auth),以及手工复核手的行为。
-
-```powershell
-node scripts\mcp-call.cjs <cwd> "<script> <args>" <tool> [jsonArgs|@file]
-```
-
-参数带中文时**一定用 `@文件`**,别在命令行里内联 JSON:PowerShell 会重新分词把引号吃掉,
-这是本机最容易踩的坑。
+整套 v0.2 验收:起本机 PG 实例 → 建全新数据库 → 构建并启动 `youkaid` → 建带护照的作业 →
+跑一轮只读链(断言停在档 2)→ 断言审计/事实/候选状态 → 走完"批准 → high-auth → 单次执行 →
+批准不可复用" → 断言数据库层三道触发器 → 渲染报告。
 
 ```powershell
-[System.IO.File]::WriteAllText("$env:TEMP\scope.json", $json, [System.Text.UTF8Encoding]::new($false))
-node scripts\mcp-call.cjs D:\fairy_fairy "src/cli.js mcp" fairy_scope_init "@$env:TEMP\scope.json"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acceptance-v02.ps1
 ```
 
-## `acceptance.ps1`
+依赖:Go 在 PATH(或 `YOUKAI_GO`)、Python、curl.exe、本机 PostgreSQL 17 二进制
+(`.pgsql/data` 或 `D:\tools\pg\pgsql`)。退出码非 0 表示某条断言失败。
 
-整套验收:建靶场 → 立 scope → 跑循环(断言在档 2 停下)→ 步进会话(断言三种拒绝)→
-渲染 HTML → 断言隔离墙。
-
-```powershell
-.\scripts\acceptance.ps1
-```
-
-需要:Go 在 `PATH`(或设置 `YOUKAI_GO`)、Python、Node、两只手在本机。
-退出码非 0 表示某条断言失败。
+断言清单(共 36 条)覆盖:无令牌 401、跨 Origin 403、通配符护照被拒、自治段只跑 tier 1、
+门口四样证据、审计逐请求、批准/ high-auth 双条件、批准一次性、三道数据库触发器、报告可复现。

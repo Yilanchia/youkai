@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -132,32 +133,70 @@ func (h *HighAuth) Verify(key string, now time.Time) (*HighAuthGrant, error) {
 	return g, nil
 }
 
-// Covers reports whether the grant names this target (host or host:port).
+// Covers reports whether the grant names this target.
+//
+// A grant's `assets` are written by a human (or by Fairy's createHighAuth), so they
+// arrive in whatever shape felt natural: a bare host, a host:port, a URL, a
+// wildcard, a CIDR. Normalising both sides here is what makes "the operator
+// authorised 127.0.0.1" cover "the action targets http://127.0.0.1:9/x".
 func (g *HighAuthGrant) Covers(target string) bool {
-	host := HostOf(target)
+	host, authority := splitTarget(target)
 	if host == "" {
-		host = strings.ToLower(strings.TrimSpace(target))
+		return false
 	}
-	for _, a := range g.Assets {
-		pat := strings.ToLower(strings.TrimSpace(a))
+	for _, raw := range g.Assets {
+		pat := strings.ToLower(strings.TrimSpace(raw))
 		if pat == "" {
 			continue
 		}
-		if pat == host {
-			return true
+		if i := strings.Index(pat, "://"); i >= 0 {
+			pat = pat[i+3:]
 		}
-		if strings.HasPrefix(pat, "*.") && strings.HasSuffix(host, pat[1:]) {
-			return true
+		if i := strings.IndexAny(pat, "/?#"); i >= 0 {
+			pat = pat[:i]
 		}
-		if strings.Contains(pat, "/") {
+		if strings.Contains(pat, "/") { // CIDR
 			if _, network, err := net.ParseCIDR(pat); err == nil {
 				if ip := net.ParseIP(host); ip != nil && network.Contains(ip) {
 					return true
 				}
 			}
+			continue
+		}
+		if strings.HasPrefix(pat, "*.") {
+			suffix := pat[1:]
+			if strings.HasSuffix(host, suffix) && len(host) > len(suffix) {
+				return true
+			}
+			continue
+		}
+		if pat == host || pat == authority {
+			return true
 		}
 	}
 	return false
+}
+
+// splitTarget returns (hostname, host:port) for a URL, a host, or a path.
+func splitTarget(target string) (string, string) {
+	t := strings.ToLower(strings.TrimSpace(target))
+	if t == "" {
+		return "", ""
+	}
+	if i := strings.Index(t, "://"); i >= 0 {
+		u, err := url.Parse(t)
+		if err == nil && u.Host != "" {
+			return strings.TrimSuffix(u.Hostname(), "."), u.Host
+		}
+	}
+	// A bare authority, possibly with a port.
+	if h, p, err := net.SplitHostPort(t); err == nil {
+		return h, h + ":" + p
+	}
+	if i := strings.IndexAny(t, "/?#"); i >= 0 {
+		t = t[:i]
+	}
+	return t, t
 }
 
 // canonicalJSON reproduces JavaScript's JSON.stringify with sorted keys and no

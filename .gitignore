@@ -9,7 +9,7 @@
 /.youkai/step/
 /.youkai/planner/
 /.youkai/hands.json
-/.youkai/artifacts/
+/.youkai/artifacts*/
 /.pgsql/
 /lab/
 *.html

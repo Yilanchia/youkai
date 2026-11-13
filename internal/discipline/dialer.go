@@ -54,9 +54,7 @@ func (d *scopedDialer) control(_, address string, _ syscall.RawConn) error {
 	if !d.scope.AllowPrivate {
 		return fmt.Errorf("%w: %s", ErrPrivateTarget, ip)
 	}
-	literal := "http://" + net.JoinHostPort(ip.String(), "80") + "/"
-	if dec, err := d.scope.Check(literal); err != nil {
-		_ = dec
+	if !d.scope.NamesHost(ip.String()) {
 		return fmt.Errorf("%w: resolved to private %s which the include list does not name", ErrPrivateTarget, ip)
 	}
 	return nil

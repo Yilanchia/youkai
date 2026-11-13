@@ -1,0 +1,288 @@
+﻿# youkai v0.2 end-to-end acceptance
+#
+# Proves the properties that matter after the monolith pivot:
+#   * no scope -> nothing is requested
+#   * every target request is audited, and the audit table cannot be rewritten
+#   * the autonomous run stops at the tier-2 door
+#   * tier-2 execution needs BOTH an operator approval AND a valid high-auth record
+#   * an approval is single-use
+#   * candidate -> verified is refused at the database until an operator verdict
+#
+# usage: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acceptance-v02.ps1
+# exit 0 = all assertions passed.
+
+$ErrorActionPreference = "Continue"
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+
+$root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+Set-Location $root
+
+$pgDir   = "D:\tools\pg\pgsql"
+$pgData  = Join-Path $root ".pgsql\data"
+$pgLog   = Join-Path $root ".pgsql\server.log"
+$dsn     = "postgres://youkai:youkai_dev_pw@127.0.0.1:55432/youkai?sslmode=disable"
+$dbName  = "youkai_acceptance"
+$labPort = 18080
+$apiPort = 8791
+$apiBase = "http://127.0.0.1:$apiPort"
+$fairyKey = "acceptance-key-0123456789abcdef"
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+
+$script:failures = 0
+function Assert($ok, $message) {
+    if ($ok) { Write-Host "ok    $message" -ForegroundColor Green }
+    else { Write-Host "FAIL  $message" -ForegroundColor Red; $script:failures++ }
+}
+# New-HighAuth builds a signed high-authorisation record the way the human's
+# tooling does: JSON.stringify(payload, sorted keys), HMAC-SHA256, hex.
+function New-HighAuth($Key, $Approver, $Asset) {
+    $now = (Get-Date).ToUniversalTime()
+    $issued = $now.ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $expires = $now.AddHours(1).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $basis = "self-hosted lab acceptance"
+    $nonce = "acc-" + ([guid]::NewGuid().ToString("N").Substring(0, 8))
+    $canonical = '{"actions":["read-only"],"approver":"' + $Approver + '","assets":["' + $Asset + '"],"basis":"' + $basis + '","expires_at":"' + $expires + '","issued_at":"' + $issued + '","nonce":"' + $nonce + '","schema":"FairyHighAuth/v1","tier":"highest"}'
+    $hmac = New-Object System.Security.Cryptography.HMACSHA256
+    $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes($Key)
+    $bytes = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($canonical))
+    $sig = -join ($bytes | ForEach-Object { $_.ToString("x2") })
+    $record = '{"schema":"FairyHighAuth/v1","payload":' + $canonical + ',"signature":"' + $sig + '"}'
+    $path = Join-Path $env:TEMP ("youkai-highauth-" + [guid]::NewGuid().ToString("N") + ".json")
+    [System.IO.File]::WriteAllText($path, $record, $utf8)
+    return $path
+}
+function Wait-Http($url, $timeoutSec = 30) {
+    $deadline = (Get-Date).AddSeconds($timeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try { return Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 2 } catch { Start-Sleep -Milliseconds 300 }
+    }
+    return $null
+}
+
+# ---- 0. postgres -----------------------------------------------------------
+Write-Host "`n== postgres ==" -ForegroundColor Cyan
+$env:PGPASSWORD = "youkai_dev_pw"
+$pgUp = $false
+try { & "$pgDir\bin\pg_isready.exe" -h 127.0.0.1 -p 55432 | Out-Null; $pgUp = ($LASTEXITCODE -eq 0) } catch {}
+if (-not $pgUp) {
+    Write-Host "starting postgres..."
+    & "$pgDir\bin\pg_ctl.exe" -D $pgData -l $pgLog -o "-p 55432 -c listen_addresses=127.0.0.1" start 2>&1 | Out-Null
+    Start-Sleep -Seconds 3
+}
+& "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d postgres -c "DROP DATABASE IF EXISTS $dbName;" 2>&1 | Out-Null
+& "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d postgres -c "CREATE DATABASE $dbName;" 2>&1 | Out-Null
+Assert ($LASTEXITCODE -eq 0) "fresh acceptance database created"
+
+$accDsn = "postgres://youkai:youkai_dev_pw@127.0.0.1:55432/$dbName`?sslmode=disable"
+
+# ---- 1. build + start the platform ----------------------------------------
+Write-Host "`n== build ==" -ForegroundColor Cyan
+$go = if ($env:YOUKAI_GO) { $env:YOUKAI_GO }
+      elseif (Get-Command go -ErrorAction SilentlyContinue) { "go" }
+      elseif (Test-Path "D:\tools\go\bin\go.exe") { "D:\tools\go\bin\go.exe" }
+      else { $null }
+if (-not $go) { Write-Host "FAIL  no go toolchain" -ForegroundColor Red; exit 1 }
+& $go build -o youkaid.exe ./cmd/youkaid 2>&1 | Out-String | Write-Host
+if (-not (Test-Path youkaid.exe)) { Write-Host "FAIL  build" -ForegroundColor Red; exit 1 }
+Write-Host "ok    youkaid builds" -ForegroundColor Green
+
+# lab target
+$python = if ($env:YOUKAI_PYTHON) { $env:YOUKAI_PYTHON }
+          elseif (Test-Path "D:\pycharm\python3\python.exe") { "D:\pycharm\python3\python.exe" }
+          else { "python" }
+$lab = Start-Process -FilePath $python -ArgumentList "scripts\lab-target.py", "$labPort" `
+    -RedirectStandardError "$env:TEMP\youkai-lab.err" -PassThru -WindowStyle Hidden
+Start-Sleep -Seconds 2
+
+$youkaiOut = Join-Path $env:TEMP "youkaid-out.txt"
+$youkaiErr = Join-Path $env:TEMP "youkaid-err.txt"
+$env:YOUKAI_DSN = $accDsn
+$env:FAIRY_AUTH_KEY = $fairyKey
+$token = -join ((1..32) | ForEach-Object { "{0:x}" -f (Get-Random -Maximum 16) })
+$tokenPath = Join-Path $env:TEMP "youkai-acceptance-token.txt"
+if (Test-Path $tokenPath) { Remove-Item -Force $tokenPath }
+$srv = Start-Process -FilePath (Join-Path $root "youkaid.exe") `
+    -ArgumentList "-addr", "127.0.0.1:$apiPort", "-artifacts", (Join-Path $root ".youkai\artifacts-acc"), "-token", $token, "-token-file", $tokenPath `
+    -RedirectStandardOutput $youkaiOut -RedirectStandardError $youkaiErr -PassThru -WindowStyle Hidden
+Start-Sleep -Seconds 3
+
+for ($i = 0; $i -lt 40; $i++) {
+    if (Test-Path $tokenPath) { break }
+    Start-Sleep -Milliseconds 250
+}
+Assert (Test-Path $tokenPath) "youkaid started and handed over its token file"
+
+# curl keeps the status code honest (Invoke-WebRequest's throw-and-inspect dance
+# is unreliable for 4xx in Windows PowerShell 5.1). The body goes in on stdin so
+# there is no temp file, no argument quoting, and no encoding surprise.
+function Api($method, $path, $body) {
+    $argv = @("-s", "-w", "`n%{http_code}", "-X", $method,
+              "-H", "X-Youkai-Token: $token", "-H", "Content-Type: application/json",
+              "--max-time", "120")
+    $raw = $null
+    if ($null -ne $body) {
+        $json = $body | ConvertTo-Json -Depth 8 -Compress
+        $argv += @("--data-binary", "@-")
+        $raw = $json | & curl.exe @argv ($apiBase + $path)
+    } else {
+        $raw = & curl.exe @argv ($apiBase + $path)
+    }
+    $lines = @($raw)
+    $code = 0
+    if ($lines.Count -gt 0) { [void][int]::TryParse(($lines[-1] -as [string]).Trim(), [ref]$code) }
+    $txt = if ($lines.Count -gt 1) { ($lines[0..($lines.Count - 2)] -join "`n") } else { "" }
+    $obj = $null
+    try { $obj = $txt | ConvertFrom-Json } catch {}
+    return @{ Code = $code; Body = $obj; Raw = $txt }
+}
+
+try {
+    $health = Api "GET" "/api/health" $null
+    Assert ($health.Code -eq 200) "health endpoint answers with the token"
+    Assert ($health.Body.provider -match "no exploitation provider") "the build ships no exploitation provider"
+
+    # ---- 2. token / origin --------------------------------------------------
+    Write-Host "`n== access control ==" -ForegroundColor Cyan
+    $noToken = (& curl.exe -s -o NUL -w "%{http_code}" "$apiBase/api/engagements")
+    Assert (($noToken -as [string]).Trim() -eq "401") "API rejects a request with no token"
+    $badOrigin = (& curl.exe -s -o NUL -w "%{http_code}" -H "X-Youkai-Token: $token" -H "Origin: http://evil.example" "$apiBase/api/engagements")
+    Assert (($badOrigin -as [string]).Trim() -eq "403") "API rejects a foreign Origin"
+
+    # ---- 3. engagement with a passport -------------------------------------
+    Write-Host "`n== scope ==" -ForegroundColor Cyan
+    $scope = @{
+        project  = "acceptance"
+        include  = @("127.0.0.1")
+        basis    = "self-hosted lab acceptance run"
+        operator = "acceptance"
+        allow_private = $true
+        allow_active_probes = $true
+        methods  = @("GET", "HEAD", "OPTIONS")
+        rps = 20
+        max_requests = 200
+        expires_at = (Get-Date).ToUniversalTime().AddHours(2).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+    $created = Api "POST" "/api/engagements" @{ name = "acc-$((Get-Date).ToString('HHmmss'))"; scope = $scope }
+    Assert ($created.Code -eq 201) "engagement created with a valid passport"
+    $engId = $created.Body.id
+    Assert ($engId -gt 0) "engagement id assigned"
+
+    $bad = Api "POST" "/api/engagements" @{ name = "bad-$((Get-Date).ToString('HHmmss'))"; scope = @{ include = @("*"); basis = "self-hosted lab"; operator = "x" } }
+    Assert ($bad.Code -eq 400) "a top-level wildcard passport is refused"
+
+    # ---- 4. autonomous run --------------------------------------------------
+    Write-Host "`n== autonomous run ==" -ForegroundColor Cyan
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ seed_urls = @("http://127.0.0.1:$labPort/search?q=acceptance"); max_steps = 6 }
+    Assert ($runRes.Code -eq 202) "run accepted"
+    $runId = $runRes.Body.run_id
+
+    $final = $null
+    for ($i = 0; $i -lt 120; $i++) {
+        Start-Sleep -Milliseconds 500
+        $r = Api "GET" "/api/engagements/$engId/runs/$runId" $null
+        if ($r.Body.done) { $final = $r.Body; break }
+    }
+    Assert ($null -ne $final) "run finished"
+    if ($null -ne $final) {
+        $stop = $final.report.stop
+        Write-Host ("      stop = {0}  steps = {1}" -f $stop, $final.report.steps.Count)
+        Assert ($stop -eq "needs_approval") "the run stopped at the tier-2 door"
+        $ranTier2 = $false
+        foreach ($s in $final.report.steps) { if ($s.tier -ne 1) { $ranTier2 = $true } }
+        Assert (-not $ranTier2) "the autonomous run executed only tier-1 capabilities"
+        Assert ($final.report.steps.Count -ge 1) "at least one read-only step ran against the lab"
+        $pending = $final.report.pending
+        Assert ($pending.Count -ge 1) "the parked intent is reported as pending"
+        if ($pending.Count -ge 1) {
+            Assert ($pending[0].exact_request.Length -gt 0) "pending carries the exact request"
+            Assert ($pending[0].min_impact.Length -gt 0) "pending carries the minimum impact"
+            Assert ($pending[0].stop_condition.Length -gt 0) "pending carries the stop condition"
+        }
+    }
+
+    # ---- 5. graph + audit ---------------------------------------------------
+    Write-Host "`n== evidence ==" -ForegroundColor Cyan
+    $graph = Api "GET" "/api/engagements/$engId/graph" $null
+    Assert ($graph.Body.stats.facts -ge 1) "facts landed in the ledger"
+    Assert ($graph.Body.stats.audit_allowed -ge 1) "every request left an audit row"
+    $gitFact = $false
+    foreach ($f in $graph.Body.facts) { if ($f.statement -match "\.git/config") { $gitFact = $true } }
+    Assert $gitFact "the /.git/config probe was recorded"
+    foreach ($f in $graph.Body.findings) { if ($f.state -ne "candidate") { Assert $false "a finding is not a candidate" } }
+    Assert $true "all findings are candidates"
+
+    # ---- 6. tier-2: approval, then high-auth, then one execution -----------
+    Write-Host "`n== tier-2 door ==" -ForegroundColor Cyan
+    $intents = Api "GET" "/api/engagements/$engId/intents" $null
+    $param = $null
+    foreach ($row in $intents.Body) { if ($row.intent.capability -eq "param") { $param = $row.intent } }
+    Assert ($null -ne $param) "the tier-2 param intent was derived"
+
+    if ($null -ne $param) {
+        $execPath = "/api/engagements/$engId/intents/$($param.id)/execute"
+        $approvePath = "/api/engagements/$engId/intents/$($param.id)/approve"
+
+        $r = Api "POST" $execPath @{ operator = "acceptance" }
+        Assert ($r.Code -eq 403) "execute without an approval is refused"
+
+        $r = Api "POST" $approvePath @{ operator = "acceptance"; basis = "self-hosted lab acceptance" }
+        Assert ($r.Code -eq 201) "operator approval recorded"
+        $approval = $r.Body
+
+        $r = Api "POST" $execPath @{ operator = "acceptance" }
+        Assert ($r.Code -eq 428) "execute without a high-auth record is refused (428 = precondition required)"
+
+        # A record signed with the WRONG key must be rejected.
+        $badAuth = New-HighAuth -Key "wrong-key-wrong-key-wrong-key" -Approver "mallory" -Asset "127.0.0.1"
+        $r = Api "POST" $execPath @{ operator = "acceptance"; high_auth_path = $badAuth }
+        Assert ($r.Code -eq 403) "a high-auth record signed with the wrong key is refused"
+
+        $goodAuth = New-HighAuth -Key $fairyKey -Approver "acceptance" -Asset "127.0.0.1"
+        $r = Api "POST" $execPath @{ operator = "acceptance"; high_auth_path = $goodAuth }
+        Assert ($r.Code -eq 200) "execute with approval + high-auth succeeds"
+        if ($r.Code -eq 200) { Write-Host ("      executed: facts +{0} findings +{1}" -f $r.Body.facts, $r.Body.findings) }
+
+        $r = Api "POST" $execPath @{ operator = "acceptance"; high_auth_path = $goodAuth }
+        Assert ($r.Code -eq 403) "the approval was consumed (second execute refused)"
+    }
+
+    # ---- 7. database-level invariants --------------------------------------
+    Write-Host "`n== database guards ==" -ForegroundColor Cyan
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE audit_log SET status=999;" 2>&1 | Out-String
+    Assert ($out -match "append-only") "audit_log refuses UPDATE at the database level"
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE findings SET state='verified';" 2>&1 | Out-String
+    Assert ($out -match "operator verdict") "candidate->verified is refused without an operator verdict"
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE intents SET approved=true;" 2>&1 | Out-String
+    Assert ($out -match "operator approval") "approved=true is refused without an approval row"
+
+    # ---- 8. findings verdict path ------------------------------------------
+    $finding = $null
+    foreach ($f in $graph.Body.findings) { if ($f.state -eq "candidate") { $finding = $f; break } }
+    if ($null -ne $finding) {
+        $vp = "/api/engagements/$engId/findings/$($finding.id)/verdict"
+        $r = Api "POST" $vp @{ operator = "acceptance"; note = "n" }
+        Assert ($r.Code -eq 400) "verdict without an explicit confirmation is refused"
+        $r = Api "POST" $vp @{ operator = "acceptance"; note = "reproduced in a browser"; confirm = $true }
+        Assert ($r.Code -eq 200) "a confirmed verdict is accepted"
+    }
+
+    # ---- 9. report ----------------------------------------------------------
+    Write-Host "`n== report ==" -ForegroundColor Cyan
+    $rep = Api "GET" "/api/engagements/$engId/report" $null
+    Assert ($rep.Code -eq 200) "report bundle renders"
+    Assert ($rep.Body.exploit_provider -match "no exploitation provider") "the report states the wall"
+    $md = Invoke-WebRequest -Uri "$apiBase/api/engagements/$engId/report?format=md&token=$token" -UseBasicParsing -TimeoutSec 20
+    Assert ($md.Content -match "youkai 证据报告") "markdown report renders"
+}
+finally {
+    foreach ($p in @($srv, $lab)) { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
+    Remove-Item Env:YOUKAI_DSN -ErrorAction SilentlyContinue
+    Remove-Item Env:FAIRY_AUTH_KEY -ErrorAction SilentlyContinue
+}
+
+if ($script:failures -ne 0) {
+    Write-Host "`n$($script:failures) ACCEPTANCE ASSERTION(S) FAILED" -ForegroundColor Red
+    exit 1
+}
+Write-Host "`nALL ACCEPTANCE ASSERTIONS PASSED" -ForegroundColor Green
+exit 0

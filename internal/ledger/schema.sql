@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS findings (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Findings are idempotent per (engagement, title+kind+where) so re-running a
+-- scan does not duplicate the same candidate.
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS findings_dedupe_idx ON findings (engagement_id, dedupe_key);
+
 CREATE TABLE IF NOT EXISTS intents (
   id                BIGSERIAL PRIMARY KEY,
   engagement_id     BIGINT NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
