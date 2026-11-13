@@ -152,5 +152,8 @@ ok  the in-page out-of-scope fetch was blocked and recorded
 - **browser 不注入已存会话**:`session` 参数尚未接到 CDP 的 `Network.setCookie`。
   当前实现只做匿名渲染 + 闸门;多身份浏览器是下一步。
 - **browser 截图落在 artifact 目录**并作为 fact 引用路径,但没有在 SPA 里内联显示(避免把图像塞进 JSON)。
-- **`Target.setAutoAttach` 失败时**会在 blocked 列表里留一条 `cdp://auto-attach` 说明,
-  不会静默降级;但这也意味着"子 target 未受闸"这一事实需要操作员看那条证据去判断。
+- **`Target.setAutoAttach` 失败时直接拒渲染(事后由审阅修正)**。本版最初只在 blocked 列表里
+  留一条 `cdp://auto-attach` 说明就继续渲染 —— 那段时间里子 target(弹窗、OOPIF、worker)会有自己的
+  CDP session,请求不经过本 session 的 Fetch 闸,属于"事后才能看见"的未受闸出口。
+  现在改为 **fail closed**:拿不到子 target 的闸门就不渲染,并把原因作为错误返回。
+  "页面没有不经 Guard 的出口"是绝对不变量,不是尽力而为。
