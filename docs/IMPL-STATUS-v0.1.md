@@ -1,5 +1,9 @@
 # IMPL-STATUS v0.1 — DEVPLAN-v0.1 落地报告
 
+> ⚠️ **已过时(superseded by [IMPL-STATUS-v0.2](IMPL-STATUS-v0.2.md))。** 本文描述 v0.1 的 MCP-两手架构
+> (`internal/mcp` / `loop` / `graph` / `hands`),该架构已被 ADR-004 的单体化取代、相关包已不存在。
+> 仅作历史记录保留,勿据此判断当前实现。
+
 > 日期:2026-11-13 · 语言 Go 1.22+(本机 1.27.4)· 零第三方运行时依赖
 > 状态:**模块一/二/三/五/六/八 + 四/七 全部落地**,`go vet` 干净,`go test ./...` 67 项通过,
 > 真机(Fairy v0.1.0 / Verdex v0.2.0)端到端验收通过。

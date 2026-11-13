@@ -3,6 +3,10 @@
 > 日期:2026-11-13 · Go 1.22+(本机 1.27.4)· PostgreSQL 17.6 · 单二进制 + 内嵌 SPA
 > 状态:**纪律脊柱 / PG 账本 / 原生 web + binary 能力 / 引擎 / HTTP+SPA / 审批台 / 双条件档 2** 全部落地。
 > `go vet` 干净,`go test ./...` 全绿,`scripts/acceptance-v02.ps1` 真机全通过。
+>
+> **审阅修订(Claude,2026-11-13)**:原先 `go test ./...` 在并行跑多包共用一个 PG 库时会在 `migrate`
+> 死锁(SQLSTATE 40P01);已给 `ledger.Migrate` 加会话级 advisory lock 串行化迁移,现 `go test ./...`
+> (默认并行)稳定全绿。单独跑各包本就通过。
 
 ## 一句话
 

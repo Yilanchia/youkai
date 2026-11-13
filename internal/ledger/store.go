@@ -58,16 +58,31 @@ func (s *Store) Close() {
 // Pool exposes the pool for tests that need raw access.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
-// Migrate applies schema.sql. It is idempotent (IF NOT EXISTS + CREATE OR REPLACE).
+// Migrate applies schema.sql. It is idempotent (IF NOT EXISTS + CREATE OR REPLACE)
+// and serialised by a session advisory lock so concurrent migrations against one
+// database (e.g. parallel `go test` packages sharing YOUKAI_TEST_DSN) can't
+// deadlock on catalog locks.
 func (s *Store) Migrate(ctx context.Context) error {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("ledger: migrate: acquire: %w", err)
 	}
 	defer conn.Release()
+	pg := conn.Conn().PgConn()
+	// Advisory lock key is the ASCII of "youkai"; any fixed constant works, it
+	// only has to be the same across every migrator.
+	const migrateLock = "SELECT pg_advisory_lock(133467618586473)"
+	const migrateUnlock = "SELECT pg_advisory_unlock(133467618586473)"
+	if _, err := pg.Exec(ctx, migrateLock).ReadAll(); err != nil {
+		return fmt.Errorf("ledger: migrate: lock: %w", err)
+	}
+	defer func() {
+		// Release on a fresh context so the unlock still runs if ctx was cancelled.
+		_, _ = pg.Exec(context.Background(), migrateUnlock).ReadAll()
+	}()
 	// PgConn.Exec speaks the simple protocol, which is what multi-statement
 	// DDL (including $$ function bodies) needs.
-	if _, err := conn.Conn().PgConn().Exec(ctx, schemaSQL).ReadAll(); err != nil {
+	if _, err := pg.Exec(ctx, schemaSQL).ReadAll(); err != nil {
 		return fmt.Errorf("ledger: migrate: %w", err)
 	}
 	return nil
