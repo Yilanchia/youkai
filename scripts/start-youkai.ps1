@@ -69,12 +69,20 @@ try {
         Write-Host "提示:未设 FAIRY_AUTH_KEY —— 档 2(利用/写方法)执行被禁用,只读与审批记录仍可用。" -ForegroundColor Yellow
     }
 
-    # 4) 固定一个令牌,先开浏览器,再前台跑 youkaid(窗口保留日志)。
-    $tok = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
-    $url = "http://127.0.0.1:8787/#token=$tok"
+    # 4) 端口用 8799,避开你以前在 :8787 跑的旧应用残留的 service worker。
+    #    youkaid 在前台跑(日志留在本窗口);后台轮询等它就绪再开浏览器,避免首开连接被拒。
+    $addr = '127.0.0.1:8799'
+    $tok  = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+    $url  = "http://$addr/#token=$tok"
     Write-Host "控制台:$url" -ForegroundColor Green
-    Start-Process $url
-    & $youkaid -addr 127.0.0.1:8787 -token $tok
+    Start-Job -ArgumentList $url, $addr -ScriptBlock {
+        param($u, $a)
+        foreach ($i in 1..60) {
+            Start-Sleep -Milliseconds 300
+            try { Invoke-WebRequest -UseBasicParsing -Uri "http://$a/" -TimeoutSec 2 | Out-Null; Start-Process $u; break } catch {}
+        }
+    } | Out-Null
+    & $youkaid -addr $addr -token $tok
 }
 catch {
     Write-Host ""

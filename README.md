@@ -123,10 +123,10 @@ $env:YOUKAI_DSN        = "postgres://youkai@127.0.0.1:55432/youkai?sslmode=disab
 $env:FAIRY_AUTH_KEY    = "<≥16 字符;档 2 对网络目标的 high-auth 校验用;不设则档 2 执行被禁用>"
 $env:YOUKAI_SESSION_KEY= "<会话加密密钥;不设则 base64 落盘并告警>"
 $env:ALICE_PW          = "<测试账号密码;清单里只写 password_env 的名字>"
-.\youkaid.exe -addr 127.0.0.1:8787
+.\youkaid.exe -addr 127.0.0.1:8799
 
 # 4) 打开终端打印的地址(令牌在 URL fragment 里,不进服务器日志)
-#    http://127.0.0.1:8787/#token=...
+#    http://127.0.0.1:8799/#token=...
 ```
 
 > 启动时若 `FAIRY_AUTH_KEY` 未设,控制台会告警:**档 2 对网络目标的执行被禁用**(批准仍会记录,只是不放行)。
@@ -138,7 +138,7 @@ $env:ALICE_PW          = "<测试账号密码;清单里只写 password_env 的�
 | 变量 | 作用 | 默认 |
 |---|---|---|
 | `YOUKAI_DSN` | PostgreSQL 连接串(必填) | — |
-| `YOUKAI_ADDR` | 监听地址(只应为 loopback) | `127.0.0.1:8787` |
+| `YOUKAI_ADDR` | 监听地址(只应为 loopback) | `127.0.0.1:8799` |
 | `YOUKAI_ARTIFACTS` | 产物目录(截图/样本/生成文本) | `.youkai/artifacts` |
 | `YOUKAI_ACCOUNTS` | 身份清单路径 | `.youkai/accounts.json` |
 | `YOUKAI_SESSIONS` | 加密会话目录 | `.youkai/sessions` |
