@@ -442,13 +442,12 @@ func (s *browserSession) enableGating(ctx context.Context, g *discipline.Guard) 
 	if _, err := s.client.Send(ctx, "Target.setAutoAttach", map[string]any{
 		"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true,
 	}, ""); err != nil {
-		// Auto-attach failing is not fatal for a single-frame page, but it must be
-		// visible: the caller sees a degraded note.
-		s.mu.Lock()
-		s.blocked = append(s.blocked, blockedRequest{
-			URL: "cdp://auto-attach", Reason: "setAutoAttach failed: " + err.Error(),
-		})
-		s.mu.Unlock()
+		// Fail closed. Without auto-attach a child target (popup, out-of-process
+		// iframe, worker) gets its own CDP session whose requests never reach this
+		// session's Fetch gate - an unguarded egress. "No unguarded request" is an
+		// absolute invariant, not a best effort, so refuse to render at all rather
+		// than render with a gap the operator would only notice after the fact.
+		return fmt.Errorf("web: browser: Target.setAutoAttach failed (%w); refusing to render without child-target gating", err)
 	}
 	return nil
 }
