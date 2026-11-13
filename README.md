@@ -21,7 +21,9 @@ go build -o youkaid.exe ./cmd/youkaid
 # 2) 启动控制面(只听 127.0.0.1)
 $env:YOUKAI_DSN = "postgres://youkai:***@127.0.0.1:55432/youkai?sslmode=disable"
 $env:FAIRY_AUTH_KEY = "<至少 16 字符,档 2 的 high-auth 校验用;不设则档 2 执行被禁用>"
-.\youkaid.exe -addr 127.0.0.1:8787
+$env:YOUKAI_SESSION_KEY = "<至少 8 字符,登录会话加密;不设则 base64 落盘并警告>"
+$env:ALICE_PW = "<测试账号密码;清单里只写 password_env 的名字>"
+.\youkaid.exe -addr 127.0.0.1:8787 -accounts .youkai/accounts.json -sessions .youkai/sessions
 
 # 3) 打开终端打印的地址(令牌在 URL fragment 里,不进服务器日志)
 #    http://127.0.0.1:8787/#token=...
@@ -67,10 +69,43 @@ any capability ──► discipline.Guard.Do ──► target
 
 | 包 | 档 1(自治) | 档 2(人批) |
 |---|---|---|
-| `internal/web` | probe, fingerprint, scan, crawl, compare, role_matrix, proof, headers, cors, exposures, redirect_check,browser(需 CDP,缺失即降级), reachability(需 high-auth) | param, param_adaptive, waf, login, accounts_*, object_seed |
+| `internal/web` | probe, fingerprint, scan, crawl, compare, role_matrix, proof, headers, cors, exposures, redirect_check, browser(CDP,页内每请求过 Guard;无 Chrome 即降级) | param, param_adaptive, waf, login |
+| `internal/accounts` | accounts_show, reachability(需 high-auth) | accounts_provision, accounts_seed, object_seed, accounts_register |
 | `internal/binary` | artifact_identify/register, strings, checksec(原生 ELF/PE 解析), symbols, disasm, decompile, mobile_unpack, firmware_extract, secrets(掩码), dataflow, sarif, doctor | pwn_template, pwn_gdbscript, web_poc, impact_proof, frida_script, download |
 
 二进制全程只读、离线、不执行样本;缺后端会明确降级(`doctor` 预检),不伪造结果。
+
+## 账号层(多身份 / 归属 / BOLA)
+
+`.youkai/accounts.json`(`YoukaiAccounts/v1`)由操作员撰写,密码只走 `password_env`:
+
+```json
+{"schema":"YoukaiAccounts/v1","base_url":"http://127.0.0.1:8080",
+ "accounts":[
+   {"name":"alice","role":"admin",
+    "login":{"url":"/login","fields":{"username":"alice"},"password_env":"ALICE_PW"},
+    "owns":[{"marker":"ORD-1","url":"/orders/1"}]},
+   {"name":"bob","role":"user",
+    "login":{"url":"/login","fields":{"username":"bob"},"password_env":"BOB_PW"}}]}
+```
+
+- `accounts_provision`(档 2):每个身份**只登录一次**,会话加密存盘,归属写成事实。
+- `accounts_seed` / `object_seed`(档 2):需 `allow_object_seeding` + 方法含 POST + `confirm` + 人工批准。
+- 归属 → 引擎自动派 `compare`(档 1,两次只读 GET)→ 标记两边可见即 `bola` 候选。
+- 会话值**从不进入账本**:意图里记的是 `session_a: "alice"`,headers 在派发前才从加密库取出。
+
+## 浏览器(CDP,且不许绕过 Guard)
+
+```
+Chrome(headless)──CDP ws(仅 loopback)──┬─ Fetch.enable(*)→ 每个页内 http(s) 请求
+                                        │      ├─ Guard.Authorize → continueRequest(先审计后放行)
+                                        │      └─ 拒绝 → Fetch.failRequest(blocked 审计行)
+                                        └─ Target.setAutoAttach → 弹窗/OOPIF 也先挂闸
+```
+
+比 Fairy 更严:渲染子资源也不放行,所以引用第三方 CDN 的页面会渲染不全 —— 这是有 scope 的作业
+应有的结果。`Guard.Authorize` 只做决定与记账,`Guard.Refuse` 记录被拦断的请求;
+静态检查 `TestNoEgressOutsideTheGuard` 同时禁止裸 `net.Dial`(唯一例外是 CDP 握手文件)。
 
 ## 与 DEVPLAN-v0.2 的已知差异
 

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"youkai/internal/accounts"
 	"youkai/internal/binary"
 	"youkai/internal/discipline"
 	"youkai/internal/ledger"
@@ -28,6 +29,11 @@ type Dispatcher struct {
 	Store *ledger.Store
 	// ArtifactBase is the root for isolated samples, one subdirectory per engagement.
 	ArtifactBase string
+	// AccountsPath is the identity manifest (.youkai/accounts.json). Empty means the
+	// default; a missing file is not an error (the UI shows "no identities yet").
+	AccountsPath string
+	// SessionDir holds encrypted login sessions, next to the manifest.
+	SessionDir string
 
 	mu     sync.Mutex
 	caches map[int64]*guardEntry
@@ -55,11 +61,35 @@ func (d *Dispatcher) Run(ctx context.Context, engagementID int64, capability str
 		if err != nil {
 			return ledger.Observation{}, err
 		}
+		// Session names become headers here, not in the graph: the ledger records
+		// "session_a: alice", never a cookie.
+		resolved, err := d.resolveSessions(eng, args)
+		if err != nil {
+			return ledger.Observation{}, err
+		}
 		return c.Run(ctx, &web.Env{
 			Guard:        guard,
 			Store:        d.Store,
 			EngagementID: eng.ID,
 			Engagement:   eng.Name,
+			ArtifactDir:  filepath.Join(d.ArtifactBase, sanitiseName(eng.Name)),
+		}, resolved)
+	}
+	if c, ok := accounts.Lookup(capability); ok {
+		guard, err := d.guardFor(ctx, eng, scope)
+		if err != nil {
+			return ledger.Observation{}, err
+		}
+		// Tier-2 account work (provision/seed/register) reaches here only through
+		// the API's approval route: the engine never dispatches it, and the scope
+		// switches are checked again inside the service.
+		return c.Run(ctx, accounts.Env{
+			Guard:        guard,
+			Store:        d.Store,
+			EngagementID: eng.ID,
+			Engagement:   eng.Name,
+			ManifestPath: d.accountsPath(),
+			SessionDir:   d.sessionDir(),
 		}, args)
 	}
 	if c, ok := binary.Lookup(capability); ok {
@@ -81,7 +111,10 @@ func (d *Dispatcher) Has(capability string) bool {
 	if _, ok := web.Lookup(capability); ok {
 		return true
 	}
-	_, ok := binary.Lookup(capability)
+	if _, ok := binary.Lookup(capability); ok {
+		return true
+	}
+	_, ok := accounts.Lookup(capability)
 	return ok
 }
 
@@ -94,7 +127,26 @@ func (d *Dispatcher) Names() map[string][]string {
 	for _, c := range binary.Registry() {
 		out["binary"] = append(out["binary"], c.Name)
 	}
+	for _, c := range accounts.Registry() {
+		out["accounts"] = append(out["accounts"], c.Name)
+	}
 	return out
+}
+
+// accountsPath is the identity manifest location.
+func (d *Dispatcher) accountsPath() string {
+	if strings.TrimSpace(d.AccountsPath) != "" {
+		return d.AccountsPath
+	}
+	return accounts.DefaultPath
+}
+
+// sessionDir sits next to the manifest so a backup of one directory carries both.
+func (d *Dispatcher) sessionDir() string {
+	if strings.TrimSpace(d.SessionDir) != "" {
+		return d.SessionDir
+	}
+	return filepath.Join(filepath.Dir(d.accountsPath()), "sessions")
 }
 
 // engagement loads the engagement and parses its passport.
@@ -161,4 +213,32 @@ func sanitiseName(s string) string {
 		out = out[:64]
 	}
 	return out
+}
+
+// AccountsView returns the redacted identity view for an engagement.
+//
+// The API uses it to render the accounts panel; provisioning and seeding are
+// capabilities (tier 2), so they still go through the approval workbench - this
+// method can only read.
+func (d *Dispatcher) AccountsView(ctx context.Context, engagementID int64) (accounts.Show, error) {
+	eng, scope, err := d.engagement(ctx, engagementID)
+	if err != nil {
+		return accounts.Show{}, err
+	}
+	guard, err := d.guardFor(ctx, eng, scope)
+	if err != nil {
+		return accounts.Show{}, err
+	}
+	svc, err := accounts.Open(accounts.Env{
+		Guard:        guard,
+		Store:        d.Store,
+		EngagementID: eng.ID,
+		Engagement:   eng.Name,
+		ManifestPath: d.accountsPath(),
+		SessionDir:   d.sessionDir(),
+	})
+	if err != nil {
+		return accounts.Show{}, err
+	}
+	return svc.Show()
 }

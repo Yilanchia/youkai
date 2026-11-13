@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"youkai/internal/accounts"
 	"youkai/internal/discipline"
 	"youkai/internal/engine"
 	"youkai/internal/gate"
@@ -46,6 +47,9 @@ type Config struct {
 	LLM LLMInfo
 	// Proposer is the optional LLM planner (proposal only).
 	Proposer engine.Proposer
+	// PairSource supplies declared ownership (the account layer) so the engine can
+	// derive tier-1 BOLA comparisons.
+	PairSource engine.PairSource
 	// MaxSteps defaults to 10 for UI-triggered runs.
 	MaxSteps int
 	// Logger defaults to the standard logger.
@@ -358,6 +362,8 @@ func (s *Server) handleEngagementScoped(w http.ResponseWriter, r *http.Request) 
 		s.handleFindings(w, r, eng, tail[1:])
 	case len(tail) >= 1 && tail[0] == "report":
 		s.handleReport(w, r, eng)
+	case len(tail) >= 1 && tail[0] == "accounts":
+		s.handleAccounts(w, r, eng)
 	case len(tail) >= 1 && tail[0] == "audit":
 		rows, err := s.cfg.Store.AuditTail(r.Context(), eng.Name, queryInt(r, "limit", 200))
 		if err != nil {
@@ -476,6 +482,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request, eng ledger.Eng
 			SeedURLs:     body.SeedURLs,
 			AllowedTools: gate.ReadOnlyCapabilities(),
 			Proposer:     s.cfg.Proposer,
+			PairSource:   s.cfg.PairSource,
 		})
 		if nerr != nil {
 			st.mu.Lock()
@@ -641,3 +648,36 @@ func (b *broadcaster) publish(topic string, ev map[string]any) {
 
 // Version is the platform version.
 const Version = "0.2.0"
+
+// AccountsViewer is implemented by a dispatcher that can render the identity view.
+// It is a narrow optional interface so the API does not depend on the runtime
+// package (and tests can omit it).
+type AccountsViewer interface {
+	AccountsView(ctx context.Context, engagementID int64) (accounts.Show, error)
+}
+
+// handleAccounts serves the redacted identity view.
+//
+// Read-only on purpose: provisioning, seeding and registration are tier-2
+// capabilities that reach the target through the approval workbench, not through
+// a convenience endpoint here.
+func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, eng ledger.Engagement) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	viewer, ok := s.cfg.Dispatcher.(AccountsViewer)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"accounts": []any{}, "bola_pairs": []any{},
+			"warnings": []string{"this build has no account layer wired"},
+		})
+		return
+	}
+	view, err := viewer.AccountsView(r.Context(), eng.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}

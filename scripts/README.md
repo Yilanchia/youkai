@@ -25,5 +25,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acceptance-v02.ps1
 依赖:Go 在 PATH(或 `YOUKAI_GO`)、Python、curl.exe、本机 PostgreSQL 17 二进制
 (`.pgsql/data` 或 `D:\tools\pg\pgsql`)。退出码非 0 表示某条断言失败。
 
-断言清单(共 36 条)覆盖:无令牌 401、跨 Origin 403、通配符护照被拒、自治段只跑 tier 1、
-门口四样证据、审计逐请求、批准/ high-auth 双条件、批准一次性、三道数据库触发器、报告可复现。
+断言清单覆盖:无令牌 401、跨 Origin 403、通配符护照被拒、自治段只跑 tier 1、
+门口四样证据、审计逐请求、批准/ high-auth 双条件、批准一次性、三道数据库触发器、报告可复现,
+以及 v0.3 的两块新能力:
+
+- **账号层**:清单加载 → provision(档 2 双条件)→ 会话就绪且视图无凭据 → seed(三道开关 + 批准)
+  → BOLA 配对 → 引擎派 `compare` → 越权对象产出 `bola` 候选。
+- **CDP 浏览器**:真实 Chrome 渲染 SPA 页(标题 + 同源 XHR),页内 `fetch` 去 out-of-scope 主机
+  被 `Fetch.failRequest` 拦断并记审计;无 Chrome 时断言降级路径。
+
+本地靶场 `lab-target.py` 为此增加了 `/login`、`/orders/1`(正确受限)、
+`/orders/2`(故意 IDOR)、`/spa`(含越界 beacon)、`/api/data`、`/signup`(CAPTCHA)。

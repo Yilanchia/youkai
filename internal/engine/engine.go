@@ -45,6 +45,21 @@ type Dispatcher interface {
 	Run(ctx context.Context, engagementID int64, capability string, args map[string]any) (ledger.Observation, error)
 }
 
+// AccessPair is one declared ownership relationship: an object the owner has, and
+// another identity that must not be able to read it.
+type AccessPair struct {
+	Owner  string
+	Viewer string
+	Marker string
+	URL    string
+}
+
+// PairSource supplies declared ownership (the account layer). Optional: without
+// it the engine simply never derives a BOLA comparison.
+type PairSource interface {
+	BolaPairs(ctx context.Context) ([]AccessPair, error)
+}
+
 // Proposer is the optional LLM planner. It proposes; the gate still decides.
 type Proposer interface {
 	// Propose returns typed intents. Each must carry Provenance (the archived
@@ -89,6 +104,8 @@ type Config struct {
 	Concurrency  int
 	Proposer     Proposer
 	AllowedTools []string
+	// PairSource supplies declared ownership pairs for BOLA comparisons.
+	PairSource PairSource
 	// SeedURLs bootstrap the graph when the engagement scope is empty.
 	SeedURLs []string
 	Now      func() time.Time

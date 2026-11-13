@@ -41,6 +41,7 @@ func (e *Engine) derive(ctx context.Context) (int, error) {
 		e.ruleGitConfigProbe,
 		e.ruleSurfaceScan,
 		e.ruleArtifactChain,
+		e.ruleBolaCompare,
 		e.ruleProofFollowUp,
 	}
 	for _, rule := range rules {
@@ -365,4 +366,44 @@ func paramNameInText(s string) string {
 		return m[1]
 	}
 	return ""
+}
+
+// ruleBolaCompare derives the read-only half of a BOLA test: two GETs of the
+// owner's object, one per identity.
+//
+// The intent records session NAMES, never headers - the dispatcher resolves them
+// from the encrypted store at dispatch time. Without declared ownership there is
+// no pair and no intent: youkai does not guess who owns what.
+func (e *Engine) ruleBolaCompare(ctx context.Context, _ ledger.GraphView) ([]derivation, error) {
+	if e.cfg.PairSource == nil {
+		return nil, nil
+	}
+	pairs, err := e.cfg.PairSource.BolaPairs(ctx)
+	if err != nil {
+		// A broken manifest is a configuration problem, not a reason to stop the
+		// read-only chain: record it as no pairs and let the operator see it in the
+		// accounts panel.
+		return nil, nil
+	}
+	var out []derivation
+	for _, p := range pairs {
+		host := hostOf(p.URL)
+		anchors := []string{}
+		if host != "" {
+			anchors = append(anchors, "host:"+host)
+		}
+		out = append(out, derivation{
+			capability: "compare",
+			args: map[string]any{
+				"url":       p.URL,
+				"session_a": p.Owner,
+				"session_b": p.Viewer,
+				"marker":    p.Marker,
+			},
+			rationale: "归属关系已声明:同一对象换一个身份读一次,看标记是否两边都可见(BOLA)。",
+			expected:  "两侧标记可见性对比",
+			anchors:   anchors,
+		})
+	}
+	return out, nil
 }

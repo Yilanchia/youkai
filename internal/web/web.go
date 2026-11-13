@@ -54,6 +54,9 @@ type Env struct {
 	Store        *ledger.Store
 	EngagementID int64
 	Engagement   string
+	// ArtifactDir holds non-secret artefacts: browser profiles and screenshots.
+	// It is never used for response bodies.
+	ArtifactDir string
 }
 
 // Capability is one registered web capability.
@@ -115,7 +118,6 @@ func initRegistry() {
 			newCapability("crawl", "同源 BFS 爬取:发现端点并登记资产,有页数与深度上限", runCrawl),
 			newCapability("compare", "双账号比对:同一 URL 两组头部,判断标记是否两侧可见", runCompare),
 			newCapability("role_matrix", "权限矩阵:多账号 × 多端点只读 GET,比较状态与长度", runRoleMatrix),
-			newCapability("reachability", "可达性图:需要 high-auth 授权,本构建不实现", runReachability),
 			newCapability("proof", "反射上下文判定:标记落在脚本/属性/注释/文本,并检测 CSP", runProof),
 			newCapability("browser", "CDP 渲染:本构建无浏览器后端,返回 ErrUnavailable", runBrowser),
 			newCapability("headers", "单项检查:安全响应头与版本泄露", runHeaders),
@@ -128,9 +130,6 @@ func initRegistry() {
 			newCapability("param_adaptive", "参数存在性探测 + 编码变体(不做绕过)", runParamAdaptive),
 			newCapability("waf", "WAF 行为画像:只测规范化差异与拦截页,不生成绕过载荷", runWAF),
 			newCapability("login", "单次登录尝试:经 guard 发一次写请求,只回 Cookie 名", runLogin),
-			newCapability("accounts_seed", "账号播种:需要账号层,本构建不实现", runAccountsSeed),
-			newCapability("accounts_register", "自助注册:需要账号层与人工处理验证码,本构建不实现", runAccountsRegister),
-			newCapability("object_seed", "对象播种:需要账号层与归属标记,本构建不实现", runObjectSeed),
 		}
 		capIndex = make(map[string]Capability, len(capabilities))
 		for _, c := range capabilities {

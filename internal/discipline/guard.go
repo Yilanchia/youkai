@@ -138,11 +138,9 @@ type Guard struct {
 
 	mu    sync.Mutex
 	scope *Scope
-	used  int
 	seq   int
-	// limiter state
-	tokens float64
-	last   time.Time
+	// lim is shared by clones: one passport, one budget.
+	lim *limiter
 
 	client    *http.Client
 	transport *http.Transport
@@ -176,8 +174,7 @@ func NewGuard(scope *Scope, engagement string, auditor Auditor) (*Guard, error) 
 		engagement: engagement,
 		auditor:    auditor,
 		scope:      scope,
-		tokens:     scope.RPS,
-		last:       time.Now(),
+		lim:        newLimiter(scope, time.Now()),
 		now:        time.Now,
 		sleep:      sleepCtx,
 	}
@@ -210,20 +207,15 @@ func (g *Guard) SetScope(s *Scope) error {
 	}
 	g.mu.Lock()
 	g.scope = s
-	g.tokens = s.RPS
-	g.last = g.now()
-	g.used = 0
 	g.mu.Unlock()
+	g.lim.reset(s, g.now())
 	g.rebuildClient()
 	return nil
 }
 
-// Used is the number of requests attempted (including blocked ones).
-func (g *Guard) Used() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.used
-}
+// Used is the number of requests admitted (including ones later blocked by the
+// transport). Blocked-before-send attempts are visible in the audit table.
+func (g *Guard) Used() int { return g.lim.count() }
 
 // rebuildClient installs the transport with the SSRF guard. The dial Control
 // callback sees the RESOLVED address, so a hostname cannot rebind its way into
@@ -361,43 +353,11 @@ func (g *Guard) admit(ctx context.Context, method, rawURL, purpose string) error
 		return refuse("%v", err)
 	}
 
-	g.mu.Lock()
-	used := g.used
-	scope = g.scope
-	g.mu.Unlock()
-	if used >= scope.MaxRequests {
+	if g.lim.count() >= scope.MaxRequests {
 		return refuse("request budget exhausted (%d)", scope.MaxRequests)
 	}
-
-	// Token bucket: one token per request, refilled at scope.RPS.
-	g.mu.Lock()
-	now := g.now()
-	elapsed := now.Sub(g.last).Seconds()
-	if elapsed > 0 {
-		g.tokens += elapsed * scope.RPS
-		if g.tokens > scope.RPS {
-			g.tokens = scope.RPS
-		}
-		g.last = now
-	}
-	wait := 0.0
-	if g.tokens < 1 {
-		wait = (1 - g.tokens) / scope.RPS
-	} else {
-		g.tokens--
-		g.used++
-	}
-	g.mu.Unlock()
-
-	if wait > 0 {
-		if err := g.sleep(ctx, time.Duration(wait*float64(time.Second))); err != nil {
-			return refuse("rate limiter interrupted: %v", err)
-		}
-		g.mu.Lock()
-		g.tokens = 0
-		g.last = g.now()
-		g.used++
-		g.mu.Unlock()
+	if _, err := g.lim.take(ctx, scope, g.now, g.sleep); err != nil {
+		return refuse("rate limiter interrupted: %v", err)
 	}
 	return nil
 }

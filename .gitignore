@@ -10,6 +10,8 @@
 /.youkai/planner/
 /.youkai/hands.json
 /.youkai/artifacts*/
+/.youkai/accounts*.json
+/.youkai/sessions*/
 /.pgsql/
 /lab/
 *.html

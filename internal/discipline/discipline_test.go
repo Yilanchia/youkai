@@ -541,3 +541,101 @@ func hmacNew(key, canonical string) string {
 	mac.Write([]byte(canonical))
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// ---- Authorize: the gate a non-guard sender (the browser) must pass ---------
+
+func TestAuthorizeWritesTheAuditRowItGrants(t *testing.T) {
+	srv, counter := countingServer(t)
+	g, aud := newTestGuard(t, testScope(t))
+
+	auth, err := g.Authorize(context.Background(), "GET", srv.URL+"/ok", "browser", map[string]any{"resource_type": "Document"})
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if auth.RequestID == "" {
+		t.Fatal("no request id issued")
+	}
+	events := aud.all()
+	if len(events) != 1 {
+		t.Fatalf("audit rows = %d, want 1", len(events))
+	}
+	if events[0].RequestID != auth.RequestID || events[0].Verdict != VerdictAllowed {
+		t.Fatalf("audit row does not match the grant: %+v", events[0])
+	}
+	if events[0].Detail["sent_by"] != "browser" {
+		t.Fatalf("audit row does not say who sent it: %+v", events[0].Detail)
+	}
+	// Authorize does NOT send: the target must stay untouched.
+	if counter.get() != 0 {
+		t.Fatalf("Authorize sent %d request(s); it must only decide", counter.get())
+	}
+}
+
+func TestAuthorizeRefusesOutOfScope(t *testing.T) {
+	g, aud := newTestGuard(t, testScope(t, "example.invalid"))
+	if _, err := g.Authorize(context.Background(), "GET", "https://evil.invalid/x", "browser", nil); err == nil {
+		t.Fatal("out-of-scope request authorised")
+	}
+	if aud.count(VerdictBlocked) != 1 {
+		t.Fatalf("blocked request not audited: %+v", aud.all())
+	}
+}
+
+func TestAuthorizeRefusesWhenAuditingIsDown(t *testing.T) {
+	aud := &memAuditor{fail: true}
+	g, err := NewGuard(testScope(t), "lab", aud)
+	if err != nil {
+		t.Fatalf("NewGuard: %v", err)
+	}
+	if _, aerr := g.Authorize(context.Background(), "GET", "http://127.0.0.1:9/x", "browser", nil); aerr == nil {
+		t.Fatal("authorised a request while the audit store was down")
+	}
+}
+
+func TestRefuseRecordsWithoutSending(t *testing.T) {
+	g, aud := newTestGuard(t, testScope(t))
+	g.Refuse(context.Background(), "POST", "http://127.0.0.1:9/evil", "browser", "blocked by the page gate", nil)
+	if aud.count(VerdictBlocked) != 1 {
+		t.Fatalf("refusal not recorded: %+v", aud.all())
+	}
+}
+
+// TestCloneSharesBudgetButNotCookies is what makes per-identity sessions safe:
+// accounts must not see each other's cookies, but they must draw from one budget.
+func TestCloneSharesBudgetButNotCookies(t *testing.T) {
+	srv, counter := countingServer(t)
+	g, _ := newTestGuard(t, testScope(t))
+
+	a := g.Clone()
+	b := g.Clone()
+	if a == b || a == g {
+		t.Fatal("Clone returned the same guard")
+	}
+	if _, err := a.Do(context.Background(), Request{URL: srv.URL + "/ok"}); err != nil {
+		t.Fatalf("clone request: %v", err)
+	}
+	if counter.get() != 1 {
+		t.Fatalf("target saw %d requests", counter.get())
+	}
+	// The cookie from a's login lives only in a's jar.
+	if got := a.SessionCookies(srv.URL); len(got) == 0 {
+		t.Fatal("the clone that logged in has no cookies")
+	}
+	if got := b.SessionCookies(srv.URL); len(got) != 0 {
+		t.Fatalf("a clone saw another clone's cookies: %+v", got)
+	}
+	if got := g.SessionCookies(srv.URL); len(got) != 0 {
+		t.Fatalf("the parent guard saw a clone's cookies: %+v", got)
+	}
+	// Budget is shared: the parent's counter moved.
+	if g.Used() != a.Used() {
+		t.Fatalf("budget is not shared: parent=%d clone=%d", g.Used(), a.Used())
+	}
+}
+
+func TestSessionCookieHeader(t *testing.T) {
+	cookies := []*http.Cookie{{Name: "sid", Value: "abc"}, {Name: "role", Value: "user"}}
+	if got := CookieHeader(cookies); got != "sid=abc; role=user" {
+		t.Fatalf("CookieHeader = %q", got)
+	}
+}

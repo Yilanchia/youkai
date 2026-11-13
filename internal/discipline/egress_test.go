@@ -65,6 +65,22 @@ func TestNoEgressOutsideTheGuard(t *testing.T) {
 			t.Errorf("%s: parse: %v", rel, perr)
 			return nil
 		}
+		// Raw sockets are the other way out. The only exception is the CDP client's
+		// WebSocket handshake, and that file refuses any non-loopback endpoint
+		// before it dials.
+		rawDialAllowed := rel == "internal/web/ws.go"
+		ast.Inspect(file, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok && !rawDialAllowed {
+				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "net" {
+					switch sel.Sel.Name {
+					case "Dial", "DialTimeout", "DialTCP", "DialUDP", "DialIP":
+						t.Errorf("%s: net.%s opens a raw socket - only internal/discipline may leave the machine",
+							rel, sel.Sel.Name)
+					}
+				}
+			}
+			return true
+		})
 		ast.Inspect(file, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
 			if !ok {

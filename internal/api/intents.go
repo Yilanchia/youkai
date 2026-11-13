@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"youkai/internal/discipline"
+	"youkai/internal/engine"
 	"youkai/internal/gate"
 	"youkai/internal/ledger"
 )
@@ -230,8 +232,13 @@ func (s *Server) executeIntent(w http.ResponseWriter, r *http.Request, eng ledge
 	}
 
 	// Condition 2: high-authorisation for anything that leaves the machine.
-	target := targetOf(it.Capability, it.Args)
-	needsHighAuth := target != "" && looksLikeURL(target)
+	//
+	// The target is not always in the arguments: an account capability names its
+	// targets in the manifest, so a resolver supplies them. A capability that is
+	// network-facing by nature needs the record even when no URL is derivable -
+	// "we could not work out the target" must never mean "skip the check".
+	targets := knownTargets(s.cfg.Dispatcher, ctx, eng.ID, it.Capability, it.Args)
+	needsHighAuth := requiresHighAuth(it.Capability) || anyURL(targets)
 	if needsHighAuth {
 		if s.cfg.HighAuthKey == "" {
 			writeErr(w, http.StatusPreconditionRequired,
@@ -254,9 +261,14 @@ func (s *Server) executeIntent(w http.ResponseWriter, r *http.Request, eng ledge
 			writeErr(w, http.StatusForbidden, "%v", err)
 			return
 		}
-		if !grant.Covers(target) {
-			writeErr(w, http.StatusForbidden, "high-auth record does not cover %q", target)
-			return
+		for _, t := range targets {
+			if !looksLikeURL(t) {
+				continue
+			}
+			if !grant.Covers(t) {
+				writeErr(w, http.StatusForbidden, "high-auth record does not cover %q", discipline.HostOf(t))
+				return
+			}
 		}
 	}
 
@@ -503,4 +515,43 @@ func ifSet(s string) string {
 		return ""
 	}
 	return s
+}
+
+// networkCapabilities are the tier-2 capabilities that put bytes on the wire even
+// when no URL appears in their arguments.
+var networkCapabilities = map[string]bool{
+	"param": true, "param_adaptive": true, "waf": true, "login": true,
+	"accounts_provision": true, "accounts_seed": true, "object_seed": true,
+	"accounts_register": true, "download": true, "reachability": true,
+}
+
+// requiresHighAuth reports whether a capability is network-facing by nature.
+func requiresHighAuth(capability string) bool { return networkCapabilities[capability] }
+
+// TargetResolver is implemented by a dispatcher that can name the targets a
+// capability would touch (the account layer reads its manifest for this).
+type TargetResolver interface {
+	TargetsFor(ctx context.Context, engagementID int64, capability string, args map[string]any) []string
+}
+
+// knownTargets collects every target the API can attribute to an intent.
+func knownTargets(d engine.Dispatcher, ctx context.Context, engagementID int64, capability string, args map[string]any) []string {
+	var out []string
+	if t := targetOf(capability, args); t != "" {
+		out = append(out, t)
+	}
+	if tr, ok := d.(TargetResolver); ok {
+		out = append(out, tr.TargetsFor(ctx, engagementID, capability, args)...)
+	}
+	return out
+}
+
+// anyURL reports whether at least one target looks like a network URL.
+func anyURL(targets []string) bool {
+	for _, t := range targets {
+		if looksLikeURL(t) {
+			return true
+		}
+	}
+	return false
 }

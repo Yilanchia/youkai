@@ -93,28 +93,32 @@ func AutonomousOK(capability string, args map[string]any) bool {
 // table is the explicit allow-list. Absence means tier 3.
 var table = map[string]Tier{
 	// ---- web: read-only evidence (module 3 tier 1) ----------------------
-	"probe":          TierReadOnly,
-	"scan":           TierReadOnly,
-	"crawl":          TierReadOnly,
-	"compare":        TierReadOnly,
-	"role_matrix":    TierReadOnly,
-	"reachability":   TierReadOnly,
-	"proof":          TierReadOnly,
-	"fingerprint":    TierReadOnly,
-	"browser":        TierReadOnly,
-	"headers":        TierReadOnly,
+	"probe":        TierReadOnly,
+	"scan":         TierReadOnly,
+	"crawl":        TierReadOnly,
+	"compare":      TierReadOnly,
+	"role_matrix":  TierReadOnly,
+	"reachability": TierReadOnly,
+	"proof":        TierReadOnly,
+	"fingerprint":  TierReadOnly,
+	"browser":      TierReadOnly,
+	"headers":      TierReadOnly,
+	// Account layer: the read-only view of identities is tier 1; anything that
+	// authenticates or writes on the target is tier 2.
+	"accounts_show":  TierReadOnly,
 	"cors":           TierReadOnly,
 	"exposures":      TierReadOnly,
 	"redirect_check": TierReadOnly,
 
 	// ---- web: proof-grade (module 3 tier 2) -----------------------------
-	"param":             TierProof,
-	"param_adaptive":    TierProof,
-	"waf":               TierProof,
-	"login":             TierProof,
-	"accounts_seed":     TierProof,
-	"accounts_register": TierProof,
-	"object_seed":       TierProof,
+	"param":              TierProof,
+	"param_adaptive":     TierProof,
+	"waf":                TierProof,
+	"login":              TierProof,
+	"accounts_provision": TierProof,
+	"accounts_seed":      TierProof,
+	"accounts_register":  TierProof,
+	"object_seed":        TierProof,
 
 	// ---- binary: read-only static analysis (module 4 tier 1) ------------
 	"artifact_identify": TierReadOnly,

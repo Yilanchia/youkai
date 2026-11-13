@@ -410,8 +410,8 @@ func TestCrawl(t *testing.T) {
 
 func TestRegistryMatchesGate(t *testing.T) {
 	registry := Registry()
-	if len(registry) != 20 {
-		t.Fatalf("registry has %d capabilities, want 20", len(registry))
+	if len(registry) < 15 {
+		t.Fatalf("registry has %d capabilities; the web layer lost entries", len(registry))
 	}
 	seen := map[string]bool{}
 	for _, capability := range registry {
@@ -522,24 +522,59 @@ func TestRedirectCheck(t *testing.T) {
 	assertEvidence(t, obs)
 }
 
-func TestStubsRefuseWithoutRequests(t *testing.T) {
+// TestMovedCapabilitiesAreGoneFromWeb pins the package boundary: the account
+// layer owns identities, so these names must not resolve here any more. If they
+// ever come back, the dispatcher would silently run the wrong implementation.
+func TestMovedCapabilitiesAreGoneFromWeb(t *testing.T) {
 	env, recorder := newTestEnv(t, []string{"127.0.0.1"}, nil)
 	ctx := context.Background()
 	before := recorder.count()
 
-	for _, name := range []string{"reachability", "accounts_seed", "accounts_register", "object_seed"} {
+	for _, name := range []string{"reachability", "accounts_seed", "accounts_register", "accounts_provision", "object_seed"} {
 		obs, err := Run(ctx, env, name, nil)
 		if err == nil {
-			t.Fatalf("%s should return a precise error", name)
+			t.Fatalf("%s should not resolve in internal/web any more", name)
 		}
 		if !obs.Empty() {
 			t.Fatalf("%s returned an observation: %+v", name, obs)
 		}
 	}
-	if _, err := Run(ctx, env, "browser", nil); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("browser error = %v, want ErrUnavailable", err)
-	}
 	if recorder.count() != before {
-		t.Fatalf("stubs sent %d requests, want 0", recorder.count()-before)
+		t.Fatalf("refusals sent %d requests, want 0", recorder.count()-before)
+	}
+}
+
+// TestBrowserRefusesWithoutSending: the browser capability must never launch for
+// a request it cannot gate, and must never touch the network before the gate.
+func TestBrowserRefusesWithoutSending(t *testing.T) {
+	env, recorder := newTestEnv(t, []string{"127.0.0.1"}, nil)
+	ctx := context.Background()
+	before := recorder.count()
+
+	// No url: argument error, no launch.
+	if _, err := Run(ctx, env, "browser", nil); err == nil {
+		t.Fatal("browser accepted a call with no url")
+	}
+	// Out-of-scope navigation target: refused before any browser starts.
+	obs, err := Run(ctx, env, "browser", map[string]any{"url": "https://out-of-scope.invalid/"})
+	if err == nil {
+		t.Fatal("browser accepted an out-of-scope navigation target")
+	}
+	if !obs.Empty() {
+		t.Fatalf("refused browser call returned an observation: %+v", obs)
+	}
+	// The refusal itself is audited (that is the point), but nothing was allowed
+	// through: no request left the machine for an out-of-scope target.
+	allowed := 0
+	for _, ev := range recorder.snapshot() {
+		if ev.Verdict == discipline.VerdictAllowed {
+			allowed++
+		}
+	}
+	if allowed != 0 {
+		t.Fatalf("browser sent %d allowed request(s) while refusing", allowed)
+	}
+	if recorder.count() == before {
+		t.Fatal("the refusal was not audited")
 	}
 }

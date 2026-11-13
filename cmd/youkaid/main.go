@@ -40,6 +40,8 @@ func main() {
 	addr := flag.String("addr", envOr(envAddr, "127.0.0.1:8787"), "loopback listen address")
 	dsn := flag.String("dsn", envOr(envDSN, ""), "PostgreSQL DSN (or "+envDSN+")")
 	artifacts := flag.String("artifacts", envOr(envArtifacts, filepath.Join(".youkai", "artifacts")), "artifact root")
+	accountsPath := flag.String("accounts", envOr("YOUKAI_ACCOUNTS", ".youkai/accounts.json"), "identity manifest (YoukaiAccounts/v1)")
+	sessionDir := flag.String("sessions", envOr("YOUKAI_SESSIONS", ".youkai/sessions"), "encrypted session directory")
 	maxSteps := flag.Int("max-steps", 10, "max steps per UI-triggered run")
 	tokenFlag := flag.String("token", envOr("YOUKAI_TOKEN", ""), "API token (generated when empty)")
 	tokenFile := flag.String("token-file", envOr("YOUKAI_TOKEN_FILE", ""), "write the API token here (0600)")
@@ -70,6 +72,8 @@ func main() {
 	}
 
 	dispatcher := runtime.New(store, *artifacts)
+	dispatcher.AccountsPath = *accountsPath
+	dispatcher.SessionDir = *sessionDir
 
 	// High-auth verification key: present means tier-2 execution against network
 	// targets is possible at all. Absent means it is disabled, loudly.
@@ -110,6 +114,7 @@ func main() {
 		HighAuthKey: highAuthKey,
 		LLM:         llmInfo,
 		Proposer:    proposer,
+		PairSource:  pairSource{dispatcher},
 		MaxSteps:    *maxSteps,
 		Logger:      log.Default(),
 	})
@@ -128,6 +133,14 @@ func main() {
 	log.Printf("  %s", url)
 	log.Printf("provider: %s", gate.Provider().Reason())
 	log.Printf("planner: %v   high-auth: %v", llmInfo.Enabled, highAuthKey != "")
+	if _, err := os.Stat(*accountsPath); err == nil {
+		log.Printf("accounts: manifest %s   sessions %s", *accountsPath, *sessionDir)
+	} else {
+		log.Printf("accounts: no manifest at %s yet (the UI will show how to write one)", *accountsPath)
+	}
+	if strings.TrimSpace(os.Getenv("YOUKAI_SESSION_KEY")) == "" && strings.TrimSpace(os.Getenv("FAIRY_SESSION_KEY")) == "" {
+		log.Printf("WARNING: no session key - login sessions will be stored base64 (equivalent to plaintext)")
+	}
 	fmt.Printf("\n  youkai  ->  %s\n\n", url)
 
 	if err := srv.ListenAndServe(ctx); err != nil {
@@ -146,4 +159,22 @@ func envOr(key, def string) string {
 func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "youkaid: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// pairSource adapts the account layer's declared ownership to the engine's
+// neutral pair type (so internal/engine stays free of account-package details).
+type pairSource struct{ d *runtime.Dispatcher }
+
+func (p pairSource) BolaPairs(ctx context.Context) ([]engine.AccessPair, error) {
+	pairs, err := p.d.BolaPairs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]engine.AccessPair, 0, len(pairs))
+	for _, pair := range pairs {
+		out = append(out, engine.AccessPair{
+			Owner: pair.Owner, Viewer: pair.Viewer, Marker: pair.Marker, URL: pair.URL,
+		})
+	}
+	return out, nil
 }

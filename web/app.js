@@ -213,7 +213,7 @@ function setView(view) {
   document.querySelectorAll(".nav").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   const titles = {
     approvals: "审批台", evidence: "证据 · 报告", runs: "任务台",
-    graph: "探索图", config: "配置 · 隔离墙", audit: "审计日志",
+    graph: "探索图", accounts: "账号 · 归属", config: "配置 · 隔离墙", audit: "审计日志",
   };
   $("#view-title").textContent = titles[view] || view;
   render();
@@ -298,6 +298,7 @@ function render() {
       case "evidence": return renderEvidence(host);
       case "runs": return renderRuns(host);
       case "graph": return renderGraph(host);
+    case "accounts": return renderAccounts(host);
       case "config": return renderConfig(host);
       case "audit": return renderAudit(host);
     }
@@ -583,6 +584,74 @@ function simpleTable(headers, rows) {
     el("thead", {}, el("tr", {}, ...headers.map((h) => el("th", {}, h)))), tbody);
 }
 
+
+/* ---- accounts ------------------------------------------------------------ */
+
+async function renderAccounts(host) {
+  let view;
+  try {
+    view = await api(`/api/engagements/${state.current.id}/accounts`);
+  } catch (e) {
+    host.appendChild(el("div", { class: "empty" }, "读取账号层失败:" + e.message));
+    return;
+  }
+  const accounts = view.accounts || [];
+  const pairs = view.bola_pairs || [];
+
+  banner("");
+  host.appendChild(el("p", { class: "hint" },
+    "账号层是 BOLA/IDOR 的燃料:身份来自清单,归属由操作员声明或由账号自建。登录与播种都是档 2,只能在审批台一步一批。"));
+
+  for (const w of (view.warnings || [])) {
+    host.appendChild(el("div", { class: "banner" }, w));
+  }
+
+  host.appendChild(el("div", { class: "sec" }, `身份 (${accounts.length})`));
+  if (!accounts.length) {
+    host.appendChild(el("div", { class: "empty" },
+      "还没有身份。由授权人写一份 " + (view.path || ".youkai/accounts.json") +
+      "(YoukaiAccounts/v1);密码只走 password_env 环境变量。"));
+  } else {
+    host.appendChild(simpleTable(["name", "role", "owns", "session"],
+      accounts.map((a) => [a.name, a.role, (a.owns || []).join(", ") || "—", a.session_ready ? "ready" : "未登录"])));
+  }
+
+  const actions = el("div", { class: "actions" },
+    el("button", { class: "ghost", onclick: () => deriveIntent("accounts_provision", {}, "为清单里每个账号登录一次并保存会话(档 2)") },
+      "派生 provision 意图(档 2)"),
+    el("button", { class: "ghost", onclick: () => deriveIntent("accounts_seed", { confirm: true }, "每账号创建一个最小对象作为归属真值(档 2)") },
+      "派生 seed 意图(档 2)"),
+    el("button", { class: "ghost", onclick: () => deriveIntent("accounts_show", {}, "只读刷新账号视图") },
+      "派生 accounts_show 意图(只读)"));
+  host.appendChild(actions);
+  host.appendChild(el("p", { class: "hint" },
+    "派生出来的档 2 意图会停在审批台,需要你逐条批准(并且登录/播种还要求 scope 里对应的开关)。"));
+
+  host.appendChild(el("div", { class: "sec" }, `BOLA 配对 (${pairs.length})`));
+  if (!pairs.length) {
+    host.appendChild(el("div", { class: "empty" }, "还没有归属关系,所以没有可比的配对。"));
+  } else {
+    host.appendChild(simpleTable(["owner", "viewer", "marker", "compared url"],
+      pairs.map((p) => [p.owner, p.viewer, p.marker, short(p.url, 90)])));
+    host.appendChild(el("p", { class: "hint" },
+      "配对的 compare 是档 1(两次只读 GET),引擎可以自走。"));
+  }
+}
+
+async function deriveIntent(capability, args, rationale) {
+  try {
+    const r = await api(`/api/engagements/${state.current.id}/intents`, {
+      method: "POST",
+      body: JSON.stringify({ capability, args, rationale, expected_fact: "" }),
+    });
+    const created = r.created ? "已创建" : "已存在";
+    banner(`意图 #${r.intent.id} ${created}(${capability},tier ${r.gate.tier})。` +
+      (r.gate.tier >= 2 ? "它停在审批台,等你批准。" : "没有可领的只读步骤时引擎会自己跑它。"), "ok");
+    await refresh();
+  } catch (e) {
+    banner("派生意图失败:" + e.message);
+  }
+}
 /* ---- config -------------------------------------------------------------- */
 
 function renderConfig(host) {

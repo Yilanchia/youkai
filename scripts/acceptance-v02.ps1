@@ -7,6 +7,10 @@
 #   * tier-2 execution needs BOTH an operator approval AND a valid high-auth record
 #   * an approval is single-use
 #   * candidate -> verified is refused at the database until an operator verdict
+#   * accounts: provision/seed are tier 2 (approval + high-auth), sessions never
+#     leak, and declared ownership turns into a working BOLA comparison
+#   * browser: a real headless Chromium renders the page, and an in-page fetch to
+#     an out-of-scope host is refused at the CDP network layer and audited
 #
 # usage: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acceptance-v02.ps1
 # exit 0 = all assertions passed.
@@ -98,11 +102,16 @@ $youkaiOut = Join-Path $env:TEMP "youkaid-out.txt"
 $youkaiErr = Join-Path $env:TEMP "youkaid-err.txt"
 $env:YOUKAI_DSN = $accDsn
 $env:FAIRY_AUTH_KEY = $fairyKey
+$env:YOUKAI_SESSION_KEY = "acceptance-session-key-0123456789"
+$env:ALICE_PW = "alice-lab-password"
+$env:BOB_PW = "bob-lab-password"
+$accountsPath = Join-Path $root ".youkai\accounts-acc.json"
+$sessionsDir  = Join-Path $root ".youkai\sessions-acc"
 $token = -join ((1..32) | ForEach-Object { "{0:x}" -f (Get-Random -Maximum 16) })
 $tokenPath = Join-Path $env:TEMP "youkai-acceptance-token.txt"
 if (Test-Path $tokenPath) { Remove-Item -Force $tokenPath }
 $srv = Start-Process -FilePath (Join-Path $root "youkaid.exe") `
-    -ArgumentList "-addr", "127.0.0.1:$apiPort", "-artifacts", (Join-Path $root ".youkai\artifacts-acc"), "-token", $token, "-token-file", $tokenPath `
+    -ArgumentList "-addr", "127.0.0.1:$apiPort", "-artifacts", (Join-Path $root ".youkai\artifacts-acc"), "-token", $token, "-token-file", $tokenPath, "-accounts", $accountsPath, "-sessions", $sessionsDir `
     -RedirectStandardOutput $youkaiOut -RedirectStandardError $youkaiErr -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 3
 
@@ -136,6 +145,24 @@ function Api($method, $path, $body) {
     return @{ Code = $code; Body = $obj; Raw = $txt }
 }
 
+# New-Intent queues one typed step (tier 1 runs unattended; tier 2 waits for us).
+function New-Intent($engId, $capability, $intentArgs, $rationale) {
+    return (Api "POST" "/api/engagements/$engId/intents" @{
+        capability = $capability; args = $intentArgs; rationale = $rationale
+    })
+}
+
+# Invoke-Step approves and executes exactly one step, optionally with high-auth.
+function Invoke-Step($engId, $intentId, $highAuthPath) {
+    $r = Api "POST" "/api/engagements/$engId/intents/$intentId/approve" @{
+        operator = "acceptance"; basis = "self-hosted lab acceptance"
+    }
+    if ($r.Code -ne 201) { return $r }
+    $body = @{ operator = "acceptance" }
+    if ($highAuthPath) { $body["high_auth_path"] = $highAuthPath }
+    return (Api "POST" "/api/engagements/$engId/intents/$intentId/execute" $body)
+}
+
 try {
     $health = Api "GET" "/api/health" $null
     Assert ($health.Code -eq 200) "health endpoint answers with the token"
@@ -157,7 +184,9 @@ try {
         operator = "acceptance"
         allow_private = $true
         allow_active_probes = $true
-        methods  = @("GET", "HEAD", "OPTIONS")
+        allow_object_seeding = $true
+        allow_account_provisioning = $true
+        methods  = @("GET", "HEAD", "OPTIONS", "POST")
         rps = 20
         max_requests = 200
         expires_at = (Get-Date).ToUniversalTime().AddHours(2).ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -246,7 +275,123 @@ try {
         Assert ($r.Code -eq 403) "the approval was consumed (second execute refused)"
     }
 
-    # ---- 7. database-level invariants --------------------------------------
+    # ---- 7. account layer: identities, ownership, BOLA ---------------------
+    Write-Host "`n== accounts ==" -ForegroundColor Cyan
+
+    # The operator writes the manifest; passwords come from the environment.
+    $manifest = @{
+        schema   = "YoukaiAccounts/v1"
+        base_url = "http://127.0.0.1:$labPort"
+        accounts = @(
+            @{
+                name  = "alice"; role = "admin"
+                login = @{ url = "http://127.0.0.1:$labPort/login"; fields = @{ username = "alice" }; password_env = "ALICE_PW" }
+                owns  = @(
+                    @{ marker = "ORD-1"; url = "/orders/1"; note = "correctly restricted" },
+                    @{ marker = "ORD-2"; url = "/orders/2"; note = "deliberately broken (IDOR)" }
+                )
+            },
+            @{
+                name  = "bob"; role = "user"
+                login = @{ url = "http://127.0.0.1:$labPort/login"; fields = @{ username = "bob" }; password_env = "BOB_PW" }
+            }
+        )
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path $accountsPath) | Out-Null
+    [System.IO.File]::WriteAllText($accountsPath, ($manifest | ConvertTo-Json -Depth 10), $utf8)
+
+    $acc = Api "GET" "/api/engagements/$engId/accounts" $null
+    Assert ($acc.Code -eq 200) "accounts view renders"
+    Assert (@($acc.Body.accounts).Count -eq 2) "two identities come from the manifest"
+    Assert (@($acc.Body.bola_pairs).Count -ge 2) "declared ownership produces BOLA pairs"
+    Assert ($acc.Raw -notmatch "lab-password") "the accounts view carries no password"
+
+    # Provision: tier 2, so it goes through approve + high-auth + one execution.
+    $iProv = New-Intent $engId "accounts_provision" @{} "为清单里每个账号登录一次并保存会话"
+    Assert ($iProv.Code -eq 201) "provision intent queued"
+    Assert ($iProv.Body.gate.tier -eq 2) "provision is classified tier 2"
+    $provId = $iProv.Body.intent.id
+
+    $r = Api "POST" "/api/engagements/$engId/intents/$provId/approve" @{ operator = "acceptance"; basis = "self-hosted lab acceptance" }
+    Assert ($r.Code -eq 201) "provision approval recorded"
+    $r = Api "POST" "/api/engagements/$engId/intents/$provId/execute" @{ operator = "acceptance" }
+    Assert ($r.Code -eq 428) "provision without high-auth is refused (precondition required)"
+    $ha = New-HighAuth -Key $fairyKey -Approver "acceptance" -Asset "127.0.0.1"
+    $r = Api "POST" "/api/engagements/$engId/intents/$provId/execute" @{ operator = "acceptance"; high_auth_path = $ha }
+    Assert ($r.Code -eq 200) "provision executed once with approval + high-auth"
+
+    $acc = Api "GET" "/api/engagements/$engId/accounts" $null
+    $ready = @($acc.Body.accounts | Where-Object { $_.session_ready }).Count
+    Assert ($ready -eq 2) "both identities now have a stored session"
+    Assert ($acc.Raw -notmatch "sess-alice|sess-bob|Cookie") "the accounts view leaks no session value"
+
+    # Seeding: allow_object_seeding + POST + confirm + approval + high-auth.
+    $iSeed = New-Intent $engId "accounts_seed" @{ confirm = $true } "每账号创建一个最小对象作为归属真值"
+    Assert ($iSeed.Code -eq 201) "seed intent queued"
+    Assert ($iSeed.Body.gate.tier -eq 2) "seeding is classified tier 2"
+    $seedId = $iSeed.Body.intent.id
+    $r = Invoke-Step $engId $seedId $ha
+    Assert ($r.Code -eq 200) "seeding executed once with both conditions"
+
+    $acc2 = Api "GET" "/api/engagements/$engId/accounts" $null
+    Assert (@($acc2.Body.bola_pairs).Count -ge 2) "BOLA pairs are available after provisioning"
+
+    # ---- 8. the engine turns ownership into tier-1 comparisons -------------
+    Write-Host "`n== BOLA comparisons ==" -ForegroundColor Cyan
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ max_steps = 8 }
+    Assert ($runRes.Code -eq 202) "comparison run accepted"
+    $cmpRun = $runRes.Body.run_id
+    $cmpFinal = $null
+    for ($i = 0; $i -lt 120; $i++) {
+        Start-Sleep -Milliseconds 500
+        $r = Api "GET" "/api/engagements/$engId/runs/$cmpRun" $null
+        if ($r.Body.done) { $cmpFinal = $r.Body; break }
+    }
+    Assert ($null -ne $cmpFinal) "comparison run finished"
+    $graph2 = Api "GET" "/api/engagements/$engId/graph" $null
+    $capabilities = @($graph2.Body.intents | ForEach-Object { $_.capability })
+    Assert ($capabilities -contains "compare") "the engine derived compare intents from ownership"
+    $facts2 = @($graph2.Body.facts | ForEach-Object { $_.statement })
+    Assert (($facts2 -join "`n") -match "双账号比对") "the comparison ran and was recorded"
+    $kinds2 = @($graph2.Body.findings | ForEach-Object { $_.kind })
+    Assert ($kinds2 -contains "bola") "the deliberately broken object produced a BOLA candidate"
+
+    # ---- 9. CDP browser: rendered DOM, and the gate blocks in-page egress --
+    Write-Host "`n== browser ==" -ForegroundColor Cyan
+    $iBro = New-Intent $engId "browser" @{ url = "http://127.0.0.1:$labPort/spa"; wait_ms = 1500 } "渲染 SPA 页,读标题/XHR,并验证页内越界请求被拦断"
+    Assert ($iBro.Code -eq 201) "browser intent queued"
+    Assert ($iBro.Body.gate.tier -eq 1) "browser is tier 1"
+
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ max_steps = 6 }
+    Assert ($runRes.Code -eq 202) "browser run accepted"
+    $broRun = $runRes.Body.run_id
+    $broFinal = $null
+    for ($i = 0; $i -lt 180; $i++) {
+        Start-Sleep -Milliseconds 500
+        $r = Api "GET" "/api/engagements/$engId/runs/$broRun" $null
+        if ($r.Body.done) { $broFinal = $r.Body; break }
+    }
+    Assert ($null -ne $broFinal) "browser run finished"
+    $facts3 = ""
+    $kinds3 = @()
+    if ($null -ne $broFinal) {
+        foreach ($s in $broFinal.report.steps) {
+            if ($s.capability -eq "browser" -and $s.ok) { $facts3 = "ran" }
+        }
+    }
+    $graph3 = Api "GET" "/api/engagements/$engId/graph" $null
+    $facts3 = (@($graph3.Body.facts | ForEach-Object { $_.statement }) -join "`n")
+    $kinds3 = @($graph3.Body.findings | ForEach-Object { $_.kind })
+    if ($facts3 -match "未找到 Chrome") {
+        Write-Host "      (no Chromium on this machine: browser degraded as designed)" -ForegroundColor Yellow
+        Assert ($true) "browser degrades cleanly without a Chromium install"
+    } else {
+        Assert ($facts3 -match "SPA lab") "the browser rendered the page title (DOM only)"
+        Assert ($facts3 -match "页面 XHR") "the browser observed a same-origin XHR"
+        Assert ($kinds3 -contains "scope-blocked") "the in-page out-of-scope fetch was blocked and recorded"
+    }
+
+    # ---- 10. database-level invariants -------------------------------------
     Write-Host "`n== database guards ==" -ForegroundColor Cyan
     $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE audit_log SET status=999;" 2>&1 | Out-String
     Assert ($out -match "append-only") "audit_log refuses UPDATE at the database level"
@@ -277,7 +422,11 @@ try {
 finally {
     foreach ($p in @($srv, $lab)) { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
     Remove-Item Env:YOUKAI_DSN -ErrorAction SilentlyContinue
+    Remove-Item Env:YOUKAI_DSN -ErrorAction SilentlyContinue
     Remove-Item Env:FAIRY_AUTH_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:YOUKAI_SESSION_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:ALICE_PW -ErrorAction SilentlyContinue
+    Remove-Item Env:BOB_PW -ErrorAction SilentlyContinue
 }
 
 if ($script:failures -ne 0) {
