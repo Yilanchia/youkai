@@ -1,0 +1,16 @@
+# build output
+/youkai.exe
+/youkaid.exe
+*.exe
+*.test
+
+# local runtime state (append-only logs belong to an engagement, not the repo)
+/.youkai/explore.json
+/.youkai/step/
+/.youkai/planner/
+/.youkai/hands.json
+/.youkai/artifacts/
+/.pgsql/
+/lab/
+*.html
+!/docs/**/*.html

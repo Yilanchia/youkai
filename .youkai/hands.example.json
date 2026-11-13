@@ -1,0 +1,17 @@
+{
+  "fairy": {
+    "cwd": "D:\\fairy_fairy",
+    "cmd": "node",
+    "args": [
+      "src/cli.js",
+      "mcp"
+    ]
+  },
+  "verdex": {
+    "cwd": "D:\\漏洞挖掘工作台",
+    "cmd": "node",
+    "args": [
+      "bin/verdex-mcp.mjs"
+    ]
+  }
+}
