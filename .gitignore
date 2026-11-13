@@ -9,6 +9,9 @@
 /.youkai/step/
 /.youkai/planner/
 /.youkai/hands.json
+/.youkai/sessions/
+/.youkai/session.key
+/.youkai/accounts.json
 /.youkai/artifacts*/
 /.youkai/accounts*.json
 /.youkai/sessions*/

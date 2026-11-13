@@ -98,6 +98,16 @@ PostgreSQL 账本 + 内嵌 SPA。它自己对目标发请求,所以那套"只读
 
 依赖:**Go ≥ 1.22** 和一个**本机 PostgreSQL**(ARTEX 同款账本后端)。
 
+> ⚠️ `youkaid.exe` 是控制台服务端,**不是 GUI** —— 直接双击它不会弹窗,而且缺 `YOUKAI_DSN` 会一启动就退出(看着像"打不开")。用下面的启动器,别双击 exe。
+
+### 最简单:双击启动器
+
+双击仓库根目录的 **`start-youkai.cmd`**(或在 PowerShell 里跑 `scripts/start-youkai.ps1`)。它会:
+拉起本机 PostgreSQL → 建库 → 配好 DSN 与会话密钥 → 启动 youkaid → 自动用浏览器打开控制台。
+出错会停在窗口里显示原因,不一闪就关。
+
+### 手动(看清每一步)
+
 ```powershell
 # 1) 准备数据库(一次性)
 #    建库建角色,例如:
