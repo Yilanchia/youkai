@@ -66,6 +66,13 @@ async function api(path, opts = {}) {
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text }; }
   if (!res.ok) {
+    // A rejected token is not a failed action: the operator cannot fix it by
+    // editing the form. Send them to the gate with an explanation instead of
+    // stringing "missing or invalid token" through every panel (found in
+    // hands-on use: the page had been opened without the #token= fragment).
+    if (res.status === 401) {
+      showGate("令牌无效或已过期:请从 youkaid 启动窗口复制完整地址(含 #token=…)重新打开,或在这里粘贴令牌");
+    }
     const msg = (body && body.error) || res.status + " " + res.statusText;
     throw new Error(msg);
   }
