@@ -1,180 +1,127 @@
 /* ---- chat: the operator talks, the AI proposes, the human clicks -------------
  *
- * The division of labour is the whole design: /api/chat returns WORDS and CARDS,
- * and a card does nothing until its confirm button calls the ordinary endpoint
- * (create engagement, queue intents, activate a signed mandate). There is no code
- * path here that changes state on the model's say-so.
+ * Division of labour (ADR-006): the agent runs read-only work by itself, stops at
+ * anything risky, and asks for one click. /api/chat returns words and cards; a card
+ * does nothing until its button calls the ordinary endpoint. approve/execute are
+ * called from THIS file only when the operator clicks - never by the model.
  */
 
-function renderChat(host) {
-  const log = el("div", { class: "chat-log" });
-  if (!state.chat) state.chat = [];
+function chatState() {
+  if (!state.chat) state.chat = { key: null, messages: [], pending: [] };
+  return state.chat;
+}
 
-  const status = el("span", { class: "llm-light" });
-  const paintStatus = async () => {
-    const r = await llmStatus();
-    status.dataset.state = r.state;
-    status.textContent = r.text;
+function parkedIntents() {
+  return (state.intents || [])
+    .map((row) => row.intent || row)
+    .filter((it) => it.status === "needs_approval");
+}
+
+function renderChat(host) {
+  const cs = chatState();
+  const log = el("div", { class: "chat-log" });
+
+  // ---- the always-visible state line -----------------------------------
+  const st = (state.graph && state.graph.stats) || {};
+  const parked = parkedIntents();
+  const runs = state.runs || [];
+  const lastRun = runs[0];
+  const statusLine = (function () {
+    if (parked.length) {
+      return { kind: "wait", text: `停在第 ${parked.length} 个动作前,等你点头` };
+    }
+    if (lastRun && lastRun.status === "running") return { kind: "busy", text: "正在自主跑只读检查…" };
+    if ((st.audit_allowed || 0) === 0) return { kind: "idle", text: "还没开始:说一句话,或点「开始扫描」" };
+    return { kind: "done", text: `这一轮跑完了:${st.audit_allowed || 0} 次请求、${st.findings || 0} 条发现` };
+  })();
+  host.appendChild(el("div", { class: "run-state " + statusLine.kind }, statusLine.text));
+
+  // ---- approval cards: the whole point of "stop at risk" -----------------
+  for (const it of parked) {
+    const what = el("div", { class: "approve-card" },
+      el("strong", {}, "需要你点头"),
+      el("p", {}, `要做什么:${it.capability}${it.rationale ? " — " + it.rationale : ""}`),
+      el("p", { class: "hint" }, `对哪个目标:${it.args && (it.args.url || it.args.target || it.args.login_url) || "(见详情)"}`),
+      el("p", { class: "hint" }, `为什么停:${it.gate_reason || "需要人确认的高风险动作"}`),
+      el("p", { class: "hint" }, "批准后只执行这一个动作,执行完这次批准就用掉了。"));
+    const ok = el("button", { class: "primary tiny-btn" }, "批准并执行");
+    const no = el("button", { class: "ghost tiny-btn" }, "拒绝");
+    ok.addEventListener("click", async () => {
+      ok.disabled = true;
+      try {
+        await api(`/api/engagements/${state.current.id}/intents/${it.id}/approve`, {
+          method: "POST", body: JSON.stringify({ operator: "operator", basis: "operator approved in the UI @ " + new Date().toISOString() }),
+        });
+        await api(`/api/engagements/${state.current.id}/intents/${it.id}/execute`, {
+          method: "POST", body: JSON.stringify({ operator: "operator" }),
+        });
+        banner(`已执行 ${it.capability}。`, "ok");
+      } catch (e) { banner("执行失败:" + e.message); ok.disabled = false; return; }
+      await refresh();
+    });
+    no.addEventListener("click", async () => {
+      no.disabled = true;
+      try {
+        await api(`/api/engagements/${state.current.id}/intents/${it.id}/reject`, {
+          method: "POST", body: JSON.stringify({ operator: "operator", reason: "UI 拒绝" }),
+        });
+        banner("已拒绝这一步。", "ok");
+      } catch (e) { banner("拒绝失败:" + e.message); no.disabled = false; return; }
+      await refresh();
+    });
+    what.appendChild(el("div", { class: "actions" }, ok, no));
+    host.appendChild(what);
+  }
+
+  // ---- history ----------------------------------------------------------
+  const paintHistory = (messages) => {
+    log.replaceChildren();
+    if (!messages.length) {
+      log.appendChild(el("div", { class: "empty" },
+        "还没有对话。可以直接说:帮我看看这个站有没有暴露的敏感文件。"));
+      return;
+    }
+    for (const m of messages) {
+      log.appendChild(el("div", { class: "bubble " + (m.role === "user" ? "me" : "ai") }, m.content));
+      const cards = Array.isArray(m.cards) ? m.cards : [];
+      for (const c of cards) log.appendChild(renderChatCard(c));
+    }
+    log.scrollTop = log.scrollHeight;
   };
 
+  // ---- composer ---------------------------------------------------------
   const input = el("textarea", {
     placeholder: "用大白话说:想测什么、现在卡在哪、该不该开某个开关…(Enter 发送,Shift+Enter 换行)",
     rows: "3",
   });
   const send = el("button", { class: "primary" }, "发送");
 
-  const addBubble = (who, text) => {
-    const b = el("div", { class: "bubble " + who }, text);
-    log.appendChild(b);
-    log.scrollTop = log.scrollHeight;
-    return b;
-  };
-
-  const addCard = (card) => {
-    const box = el("div", { class: "card chat-card" });
-    const title = el("h3", {}, {
-      note: "说明",
-      scope_draft: "建议的授权范围",
-      mandate_draft: "建议的委托书(要你签)",
-      plan: "建议的下一步",
-    }[card.type] || card.type);
-    box.appendChild(title);
-    if (card.why) box.appendChild(el("p", { class: "hint" }, card.why));
-
-    if (card.type === "note") {
-      box.appendChild(el("p", {}, card.text || ""));
-      return box;
-    }
-
-    if (card.type === "scope_draft") {
-      const sc = card.scope || {};
-      box.appendChild(el("p", {}, "目标:" + ((sc.include || []).join(", ") || "—")));
-      box.appendChild(el("p", { class: "hint" },
-        "方法:" + ((sc.methods || ["GET", "HEAD", "OPTIONS"]).join("/")) +
-        " · 高风险开关:默认全关"));
-      const go = el("button", { class: "primary tiny-btn" }, "按这个范围建任务");
-      go.addEventListener("click", async () => {
-        try {
-          await api("/api/engagements", {
-            method: "POST",
-            body: JSON.stringify({
-              name: card.name || "chat-" + new Date().toISOString().slice(5, 16),
-              scope: Object.assign({
-                basis: "操作员在对话中确认有权测试该目标",
-                operator: "operator", max_requests: 2000, rps: 5,
-              }, sc),
-            }),
-          });
-          banner("任务已创建(按对话里那份授权范围)。", "ok");
-          await loadEngagements();
-          setView("runs");
-        } catch (e) { banner("创建失败:" + e.message); }
-      });
-      box.appendChild(el("div", { class: "actions" }, go));
-      return box;
-    }
-
-    if (card.type === "plan") {
-      const list = el("ol", { class: "steps-list" });
-      for (const st of card.steps || []) {
-        list.appendChild(el("li", {},
-          el("code", {}, st.capability), st.why ? el("span", { class: "hint" }, " — " + st.why) : ""));
-      }
-      box.appendChild(list);
-      box.appendChild(el("p", { class: "hint" },
-        "只排只读步骤。其中任何需要你点头的动作,仍然会停在「待办审批」。"));
-      const go = el("button", { class: "primary tiny-btn" }, "把这些步骤排进队列");
-      go.addEventListener("click", async () => {
-        if (!state.current) return banner("先建一个任务,再排步骤");
-        let ok = 0;
-        for (const st of card.steps || []) {
-          try {
-            await api(`/api/engagements/${state.current.id}/intents`, {
-              method: "POST",
-              body: JSON.stringify({ capability: st.capability, args: st.args || {}, rationale: st.why || "from chat" }),
-            });
-            ok++;
-          } catch (e) { banner("排入失败:" + e.message); break; }
-        }
-        if (ok) { banner(`已排入 ${ok} 个步骤。点「开始扫描」继续。`, "ok"); await refresh(); }
-      });
-      box.appendChild(el("div", { class: "actions" }, go));
-      return box;
-    }
-
-    if (card.type === "mandate_draft") {
-      const classes = card.classes || [];
-      const cn = { param: "参数存在性探测(SQL/模板注入)", waf: "WAF 行为观察", seeding: "自动创建测试对象", registration: "注册测试账号" };
-      box.appendChild(el("p", {}, "你将授权 youkai 在 " +
-        ((card.assets || []).join(", ") || "当前授权范围") + " 上自动执行:"));
-      box.appendChild(el("ul", {}, ...classes.map((c) => el("li", {}, cn[c] || c))));
-      box.appendChild(el("p", {},
-        `上限 ${card.max_requests} 次请求,${card.expires_hours} 小时后失效。` +
-        "这些动作只判存在、不取数据;期间不再逐步问你,但你可以随时急停。"));
-      box.appendChild(el("p", { class: "hint" },
-        "youkai 不会替你签:这把钥匙在你手里。下面这条命令在你自己机器上跑,签完把文件贴回来。"));
-
-      const draft = el("textarea", { rows: "6", readonly: "readonly" }, JSON.stringify({
-        tier: "highest",
-        basis: card.basis || "操作员在对话中确认授权",
-        approver: "operator",
-        assets: card.assets || [],
-        actions: ["read-only"].concat(classes.map((c) => "tier2:" + c)),
-        max_requests: card.max_requests,
-        issued_at: new Date().toISOString(),
-        expires_at: new Date(Date.now() + (card.expires_hours || 24) * 3600 * 1000).toISOString(),
-        nonce: Math.random().toString(36).slice(2),
-      }, null, 2));
-      const file = el("textarea", { rows: "6", placeholder: "签好的记录(youkai-sign 输出的 JSON)贴这里" });
-      const go = el("button", { class: "primary tiny-btn" }, "激活这份委托书");
-      go.addEventListener("click", async () => {
-        if (!state.current) return banner("先建一个任务");
-        let rec;
-        try { rec = JSON.parse(file.value); } catch { return banner("贴进来的不是合法 JSON"); }
-        try {
-          const r = await api(`/api/engagements/${state.current.id}/mandate/activate`, {
-            method: "POST", body: JSON.stringify(rec),
-          });
-          banner(`委托书已生效:${(r.classes || []).join("/")},剩余 ${r.remaining} 次请求。急停随时可用。`, "ok");
-          await refresh();
-        } catch (e) { banner("激活失败:" + e.message); }
-      });
-      box.append(
-        el("p", { class: "label" }, "① 存成 mandate.json,然后在你机器上跑"),
-        el("pre", { class: "mono small" }, "youkai-sign -draft mandate.json -out mandate.signed.json"),
-        draft,
-        el("p", { class: "label" }, "② 把签好的 mandate.signed.json 内容贴到这里"),
-        file,
-        el("div", { class: "actions" }, go));
-      return box;
-    }
-    return box;
-  };
-
   const submit = async () => {
     const text = input.value.trim();
     if (!text) return;
     if (!state.current) return banner("先建一个任务:对话要有一个上下文");
-    addBubble("me", text);
+    const cs2 = chatState();
+    cs2.messages.push({ role: "user", content: text, cards: [] });
+    paintHistory(cs2.messages);
     input.value = "";
-    const thinking = addBubble("ai muted", "…");
+    const thinking = el("div", { class: "bubble ai muted" }, "…");
+    log.appendChild(thinking);
+    log.scrollTop = log.scrollHeight;
     try {
       const r = await api(`/api/engagements/${state.current.id}/chat`, {
         method: "POST", body: JSON.stringify({ message: text }),
       });
-      thinking.textContent = r.reply || "(空)";
-      thinking.classList.remove("muted");
-      for (const c of r.cards || []) log.appendChild(addCard(c));
+      thinking.remove();
+      cs2.messages.push({ role: "assistant", content: r.reply || "(空)", cards: r.cards || [] });
+      paintHistory(cs2.messages);
       if ((r.rejected || []).length) {
         log.appendChild(el("p", { class: "hint" },
           "有 " + r.rejected.length + " 条建议被丢弃(不在允许的动作清单里):" + r.rejected.join(";")));
       }
-      log.scrollTop = log.scrollHeight;
-      state.chat.push({ me: text, reply: r.reply });
     } catch (e) {
       thinking.textContent = "没能回答:" + e.message;
     }
-    paintStatus();
+    await refresh();
   };
 
   send.addEventListener("click", submit);
@@ -182,24 +129,123 @@ function renderChat(host) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
   });
 
-  const header = el("div", { class: "card" },
+  const status = el("span", { class: "llm-light" });
+  llmStatus().then((r) => { status.dataset.state = r.state; status.textContent = r.text; });
+
+  host.appendChild(el("div", { class: "card" },
     el("div", { class: "actions", style: "justify-content:space-between" },
       el("h3", {}, "对话"),
       status),
     el("p", { class: "hint" },
-      "你说想干什么,AI 把它翻译成一张待确认的卡片;卡片不点确认就不会发生任何事。" +
-      "AI 只有嘴,没有手:它改不了授权范围、批准不了动作、也盖不了「已确认」。"),
-    el("p", { class: "hint" },
-      "它能看见的是 youkai 归一后的摘要(发现标题、步骤状态、在效委托书),**不含目标响应正文** —— 页面里的内容可能是攻击者写的。"),
+      "你说想干什么,AI 把它翻译成一张待确认的卡片;需要冒险的动作会停下来等你点「批准」。" +
+      "AI 只有嘴:它改不了授权范围、批准不了动作、也盖不了「已确认」。"),
     log,
-    el("div", { class: "chat-input" }, input, send));
+    el("div", { class: "chat-input" }, input, send)));
 
-  host.appendChild(header);
-  paintStatus();
+  // First visit for this engagement: pull the stored conversation.
+  const key = state.current ? String(state.current.id) : "none";
+  if (cs.key !== key) {
+    cs.key = key;
+    paintHistory([]);
+    if (state.current) {
+      api(`/api/engagements/${state.current.id}/chat?limit=200`)
+        .then((r) => {
+          cs.messages = (r.messages || []).map((m) => ({
+            role: m.role, content: m.content,
+            cards: Array.isArray(m.cards) ? m.cards : [],
+          }));
+          paintHistory(cs.messages);
+        })
+        .catch(() => paintHistory([]));
+    }
+  } else {
+    paintHistory(cs.messages);
+  }
 }
 
-// llmStatus is the one source of truth for the status light: unconfigured, ok, or
-// configured-but-failing, with the real error.
+// renderChatCard draws one proposal. The buttons call ordinary endpoints; the
+// model's text never becomes an action by itself.
+function renderChatCard(card) {
+  const box = el("div", { class: "card chat-card" });
+  const titles = {
+    note: "说明", scope_draft: "建议的授权范围",
+    mandate_draft: "建议的委托书(要你签)", plan: "建议的下一步",
+  };
+  box.appendChild(el("h3", {}, titles[card.type] || card.type));
+  if (card.why) box.appendChild(el("p", { class: "hint" }, card.why));
+
+  if (card.type === "note") {
+    box.appendChild(el("p", {}, card.text || ""));
+    return box;
+  }
+
+  if (card.type === "scope_draft") {
+    const sc = card.scope || {};
+    box.appendChild(el("p", {}, "目标:" + ((sc.include || []).join(", ") || "—")));
+    box.appendChild(el("p", { class: "hint" },
+      "方法:" + ((sc.methods || ["GET", "HEAD", "OPTIONS"]).join("/")) + " · 高风险开关:默认全关"));
+    const go = el("button", { class: "primary tiny-btn" }, "按这个范围建任务");
+    go.addEventListener("click", async () => {
+      try {
+        await api("/api/engagements", {
+          method: "POST",
+          body: JSON.stringify({
+            name: card.name || "chat-" + new Date().toISOString().slice(5, 16),
+            scope: Object.assign({
+              basis: "操作员在对话中确认有权测试该目标",
+              operator: "operator", max_requests: 2000, rps: 5,
+            }, sc),
+          }),
+        });
+        banner("任务已创建。", "ok");
+        await loadEngagements();
+        setView("runs");
+      } catch (e) { banner("创建失败:" + e.message); }
+    });
+    box.appendChild(el("div", { class: "actions" }, go));
+    return box;
+  }
+
+  if (card.type === "plan") {
+    const list = el("ol", { class: "steps-list" });
+    for (const st of card.steps || []) {
+      list.appendChild(el("li", {}, el("code", {}, st.capability),
+        st.why ? el("span", { class: "hint" }, " — " + st.why) : ""));
+    }
+    box.appendChild(list);
+    box.appendChild(el("p", { class: "hint" },
+      "只排只读步骤。其中任何需要你点头的动作,仍然会停下来等你批。"));
+    const go = el("button", { class: "primary tiny-btn" }, "把这些步骤排进队列");
+    go.addEventListener("click", async () => {
+      if (!state.current) return banner("先建一个任务,再排步骤");
+      let ok = 0;
+      for (const st of card.steps || []) {
+        try {
+          await api(`/api/engagements/${state.current.id}/intents`, {
+            method: "POST",
+            body: JSON.stringify({ capability: st.capability, args: st.args || {}, rationale: st.why || "from chat" }),
+          });
+          ok++;
+        } catch (e) { banner("排入失败:" + e.message); break; }
+      }
+      if (ok) { banner(`已排入 ${ok} 个步骤。点「开始」继续。`, "ok"); await refresh(); }
+    });
+    box.appendChild(el("div", { class: "actions" }, go));
+    return box;
+  }
+
+  if (card.type === "mandate_draft") {
+    // Advanced and opt-in since ADR-006: the default path is one click per step.
+    box.appendChild(el("p", { class: "hint" },
+      "这是高级用法,只在服务端开了 require-high-auth 时才生效;默认不需要它 —— 每个动作点一次「批准」就行。"));
+    box.appendChild(el("p", {}, "目标:" + ((card.assets || []).join(", ") || "当前授权范围")));
+    box.appendChild(el("p", {}, `动作类:${(card.classes || []).join(", ")} · 上限 ${card.max_requests} 次 · ${card.expires_hours} 小时`));
+    return box;
+  }
+  return box;
+}
+
+// llmStatus is the one source of truth for the status light.
 async function llmStatus() {
   const llm = (state.config && state.config.llm) || {};
   if (!llm.key_present && !llm.key_from_env) {
@@ -214,7 +260,7 @@ async function llmStatus() {
   return { state: "unknown", text: "● 已配置,未测试" };
 }
 
-// testLLM runs the same probe the settings panel uses and remembers the answer.
+// testLLM runs the probe and remembers the answer.
 async function testLLM() {
   const llm = (state.config && state.config.llm) || {};
   try {

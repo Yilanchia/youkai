@@ -22,7 +22,7 @@ func mandateFor(class, target string, max int) ledger.Mandate {
 // TestNoMandateStillParksTier2 is the control: without a mandate nothing changed.
 func TestNoMandateStillParksTier2(t *testing.T) {
 	f := mustStore(t, scopeJSON(t, "127.0.0.1"))
-	eng := newEngine(t, f, &fakeDispatcher{}, Config{MaxSteps: 30})
+	eng := newEngine(t, f, &fakeDispatcher{}, Config{MaxSteps: 30, RequireHighAuth: true})
 	eng.cfg.PairSource = nil
 	f.seedIntent(ledger.IntentSpec{Capability: "param", Args: map[string]any{"url": "http://127.0.0.1:9/s?q=1"}})
 
@@ -44,7 +44,7 @@ func TestMandateLetsTheCoveredClassRun(t *testing.T) {
 	f := mustStore(t, scopeJSON(t, "127.0.0.1"))
 	f.mandate = mandateFor("param", "127.0.0.1:9", 500)
 	disp := &fakeDispatcher{}
-	eng := newEngine(t, f, disp, Config{MaxSteps: 30})
+	eng := newEngine(t, f, disp, Config{MaxSteps: 30, RequireHighAuth: true})
 	f.seedIntent(ledger.IntentSpec{Capability: "param", Args: map[string]any{"url": "http://127.0.0.1:9/s?q=1"}})
 
 	if _, err := eng.Run(context.Background(), 1); err != nil {
@@ -66,7 +66,7 @@ func TestMandateDoesNotCoverOtherClasses(t *testing.T) {
 	f := mustStore(t, scopeJSON(t, "127.0.0.1"))
 	f.mandate = mandateFor("param", "127.0.0.1:9", 500)
 	disp := &fakeDispatcher{}
-	eng := newEngine(t, f, disp, Config{MaxSteps: 30})
+	eng := newEngine(t, f, disp, Config{MaxSteps: 30, RequireHighAuth: true})
 	f.seedIntent(ledger.IntentSpec{Capability: "waf", Args: map[string]any{"url": "http://127.0.0.1:9/s?q=1"}})
 
 	if _, err := eng.Run(context.Background(), 1); err != nil {
@@ -85,7 +85,7 @@ func TestMandateDoesNotCoverOtherTargets(t *testing.T) {
 	f := mustStore(t, scopeJSON(t, "127.0.0.1", "example.com"))
 	f.mandate = mandateFor("param", "127.0.0.1:9", 500)
 	disp := &fakeDispatcher{}
-	eng := newEngine(t, f, disp, Config{MaxSteps: 30})
+	eng := newEngine(t, f, disp, Config{MaxSteps: 30, RequireHighAuth: true})
 	f.seedIntent(ledger.IntentSpec{Capability: "param", Args: map[string]any{"url": "http://example.com/s?q=1"}})
 
 	if _, err := eng.Run(context.Background(), 1); err != nil {
@@ -105,7 +105,7 @@ func TestMandateBudgetExhaustionParks(t *testing.T) {
 	f.mandate = mandateFor("param", "127.0.0.1:9", 10)
 	f.mandateUse = 10
 	disp := &fakeDispatcher{}
-	eng := newEngine(t, f, disp, Config{MaxSteps: 30})
+	eng := newEngine(t, f, disp, Config{MaxSteps: 30, RequireHighAuth: true})
 	f.seedIntent(ledger.IntentSpec{Capability: "param", Args: map[string]any{"url": "http://127.0.0.1:9/s?q=1"}})
 
 	if _, err := eng.Run(context.Background(), 1); err != nil {
@@ -126,7 +126,7 @@ func TestExpiredMandateParks(t *testing.T) {
 	m.ExpiresAt = time.Now().Add(-time.Minute)
 	f.mandate = m
 	disp := &fakeDispatcher{}
-	eng := newEngine(t, f, disp, Config{MaxSteps: 30})
+	eng := newEngine(t, f, disp, Config{MaxSteps: 30, RequireHighAuth: true})
 	f.seedIntent(ledger.IntentSpec{Capability: "param", Args: map[string]any{"url": "http://127.0.0.1:9/s?q=1"}})
 
 	if _, err := eng.Run(context.Background(), 1); err != nil {
@@ -142,7 +142,7 @@ func TestMandateReadFailureFailsClosed(t *testing.T) {
 	f := mustStore(t, scopeJSON(t, "127.0.0.1"))
 	f.mandateErr = errors.New("database is down")
 	disp := &fakeDispatcher{}
-	eng := newEngine(t, f, disp, Config{MaxSteps: 30})
+	eng := newEngine(t, f, disp, Config{MaxSteps: 30, RequireHighAuth: true})
 	f.seedIntent(ledger.IntentSpec{Capability: "param", Args: map[string]any{"url": "http://127.0.0.1:9/s?q=1"}})
 
 	if _, err := eng.Run(context.Background(), 1); err != nil {
@@ -200,4 +200,25 @@ func indexOf(h, n string) int {
 		}
 	}
 	return -1
+}
+
+// TestMandateIsIgnoredWithoutHighAuthMode is the ADR-006 correction in one test:
+// a mandate can exist in the store and still grant nothing, because the default
+// build does not read it at all.
+func TestMandateIsIgnoredWithoutHighAuthMode(t *testing.T) {
+	f := mustStore(t, scopeJSON(t, "127.0.0.1"))
+	f.mandate = mandateFor("param", "127.0.0.1:9", 500)
+	disp := &fakeDispatcher{}
+	eng := newEngine(t, f, disp, Config{MaxSteps: 30}) // RequireHighAuth stays false
+	f.seedIntent(ledger.IntentSpec{Capability: "param", Args: map[string]any{"url": "http://127.0.0.1:9/s?q=1"}})
+
+	if _, err := eng.Run(context.Background(), 1); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if n := disp.count("param"); n != 0 {
+		t.Fatalf("a mandate granted autonomy without high-auth mode (%d param calls)", n)
+	}
+	if got := f.intentByCapability("param"); got == nil || got.Status != ledger.StatusNeedsApproval {
+		t.Fatalf("param = %+v, want needs_approval", got)
+	}
 }

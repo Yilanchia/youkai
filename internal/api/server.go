@@ -43,8 +43,12 @@ type Config struct {
 	// ArtifactDir is where binary artifacts are isolated.
 	ArtifactDir string
 	// HighAuthKey is the FAIRY_AUTH_KEY used to *verify* high-auth records.
-	// Empty means tier-2 execution is disabled (approval still works).
 	HighAuthKey string
+	// RequireHighAuth restores the ADR-005 rule: a tier-2 step against a network
+	// target needs a signed record on top of the approval row. Off by default -
+	// ADR-006 explains why one clear click beats a cryptographic ritual nobody
+	// performs correctly on a loopback console.
+	RequireHighAuth bool
 	// Settings persists runtime configuration (LLM API). Optional: without it the
 	// LLM panel is read-only and environment-only.
 	Settings *config.Store
@@ -517,15 +521,16 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request, eng ledger.Eng
 			maxSteps = s.cfg.MaxSteps
 		}
 		eng2, nerr := engine.New(engine.Config{
-			Store:        s.cfg.Store,
-			EngagementID: eng.ID,
-			Engagement:   eng.Name,
-			Dispatcher:   s.cfg.Dispatcher,
-			MaxSteps:     maxSteps,
-			SeedURLs:     body.SeedURLs,
-			AllowedTools: gate.ReadOnlyCapabilities(),
-			Proposer:     s.proposer(),
-			PairSource:   s.cfg.PairSource,
+			Store:           s.cfg.Store,
+			EngagementID:    eng.ID,
+			Engagement:      eng.Name,
+			Dispatcher:      s.cfg.Dispatcher,
+			MaxSteps:        maxSteps,
+			SeedURLs:        body.SeedURLs,
+			AllowedTools:    gate.ReadOnlyCapabilities(),
+			Proposer:        s.proposer(),
+			PairSource:      s.cfg.PairSource,
+			RequireHighAuth: s.cfg.RequireHighAuth,
 		})
 		if nerr != nil {
 			st.mu.Lock()

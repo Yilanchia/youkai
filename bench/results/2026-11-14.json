@@ -1,9 +1,9 @@
 {
   "schema": "YoukaiBench/v1",
   "lab": "scripts/lab-target.py",
-  "target": "http://127.0.0.1:18095",
+  "target": "http://127.0.0.1:18096",
   "max_steps": 14,
-  "ran_at": "2026-11-14T07:47:53Z",
+  "ran_at": "2026-11-14T16:39:52Z",
   "recall": 1,
   "precision": 1,
   "ground_truth": [
@@ -11,49 +11,49 @@
       "key": "git-exposure",
       "expected": "仓库配置可读 (/.git/config 返回 200 且含 [core])",
       "found": true,
-      "finding": "#852 Git 配置可读"
+      "finding": "#1161 Git 配置可读"
     },
     {
       "key": "reflection",
       "expected": "参数 q 反射进响应",
       "found": true,
-      "finding": "#851 参数 q 的值反射进响应"
+      "finding": "#1160 参数 q 的值反射进响应"
     },
     {
       "key": "header-csp",
       "expected": "缺失 CSP",
       "found": true,
-      "finding": "#846 缺失安全响应头:CSP"
+      "finding": "#1155 缺失安全响应头:CSP"
     },
     {
       "key": "header-xfo",
       "expected": "缺失 X-Frame-Options",
       "found": true,
-      "finding": "#847 缺失安全响应头:X-Frame-Options"
+      "finding": "#1156 缺失安全响应头:X-Frame-Options"
     },
     {
       "key": "header-xcto",
       "expected": "缺失 X-Content-Type-Options",
       "found": true,
-      "finding": "#848 缺失安全响应头:X-Content-Type-Options"
+      "finding": "#1157 缺失安全响应头:X-Content-Type-Options"
     },
     {
       "key": "header-referrer",
       "expected": "缺失 Referrer-Policy",
       "found": true,
-      "finding": "#849 缺失安全响应头:Referrer-Policy"
+      "finding": "#1158 缺失安全响应头:Referrer-Policy"
     },
     {
       "key": "version",
       "expected": "服务端版本号暴露",
       "found": true,
-      "finding": "#850 服务端版本号暴露"
+      "finding": "#1159 服务端版本号暴露"
     },
     {
       "key": "api-doc",
       "expected": "API 文档可公开读取",
       "found": true,
-      "finding": "#845 API 文档可公开读取"
+      "finding": "#1154 API 文档可公开读取"
     }
   ],
   "findings": 13,

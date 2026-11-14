@@ -121,7 +121,11 @@ type Config struct {
 	PairSource PairSource
 	// SeedURLs bootstrap the graph when the engagement scope is empty.
 	SeedURLs []string
-	Now      func() time.Time
+	// RequireHighAuth gates the ADR-005 mandate path. Off by default: ADR-006
+	// replaced "sign a mandate, then act freely inside it" with "one click per
+	// risky step", so a mandate is only honoured where a deployment opts back in.
+	RequireHighAuth bool
+	Now             func() time.Time
 }
 
 // StepRecord is one executed intent, as reported to the UI.

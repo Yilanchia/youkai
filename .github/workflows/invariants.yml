@@ -122,7 +122,8 @@ jobs:
         run: |
           missing=0
           for t in audit_log_append_only_trg findings_verdict_guard_trg \
-                   intents_approval_guard_trg report_snapshots_no_update; do
+                   intents_approval_guard_trg report_snapshots_no_update \
+                   chat_messages_append_only_trg; do
             n="$(psql -h 127.0.0.1 -U youkai -d youkai_test -tAc \
                  "SELECT count(*) FROM pg_trigger WHERE tgname = '$t' AND NOT tgisinternal;")"
             if [ "$n" != "1" ]; then
@@ -134,4 +135,4 @@ jobs:
           done
           exit $missing
       - name: the triggers actually refuse
-        run: go test ./internal/ledger -run 'TestAuditIsAppendOnly|TestVerifiedRequiresOperatorVerdict|TestApprovalRequiresTheApprovalRow' -count=1 -v
+        run: go test ./internal/ledger -run 'TestAuditIsAppendOnly|TestVerifiedRequiresOperatorVerdict|TestApprovalRequiresTheApprovalRow|TestChatMessagesAreAppendOnly' -count=1 -v

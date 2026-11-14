@@ -19,8 +19,18 @@ import (
 // activate a signed mandate). That is why this handler needs no gate of its own -
 // it cannot widen anything, only describe.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, eng ledger.Engagement) {
+	// GET is the history: the conversation survives a refresh (v0.12).
+	if r.Method == http.MethodGet {
+		rows, err := s.cfg.Store.ChatHistory(r.Context(), eng.ID, queryInt(r, "limit", 200))
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"messages": rows})
+		return
+	}
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "POST only")
+		writeErr(w, http.StatusMethodNotAllowed, "GET or POST")
 		return
 	}
 	var body struct {
@@ -40,6 +50,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, eng ledger.E
 		return
 	}
 
+	// Store the operator's turn first: if the model fails, the question is still
+	// part of the record (and the retry has something to refer to).
+	userMsg, uerr := s.cfg.Store.AppendChat(r.Context(), eng.ID, "user", msg, nil)
+	if uerr != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", uerr)
+		return
+	}
 	ctx := s.chatContext(r, eng)
 	reply, err := s.cfg.Planner.Chat(r.Context(), planner.ChatRequest{
 		EngagementID: eng.ID, Message: msg, Context: ctx,
@@ -48,8 +65,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, eng ledger.E
 		writeErr(w, http.StatusBadGateway, "AI 没有回答:%v", err)
 		return
 	}
+	asstMsg, aerr := s.cfg.Store.AppendChat(r.Context(), eng.ID, "assistant", reply.Reply, reply.Cards)
+	if aerr != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", aerr)
+		return
+	}
 	s.trace(r, eng.ID, "chat turn archived as planner_call:"+strconv.FormatInt(reply.Archived, 10))
-	writeJSON(w, http.StatusOK, reply)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reply": reply.Reply, "cards": reply.Cards, "rejected": reply.Rejected,
+		"archived_call_id": reply.Archived,
+		"user_message":     userMsg, "assistant_message": asstMsg,
+	})
 }
 
 // chatContext builds the model's view: normalised facts and states only.

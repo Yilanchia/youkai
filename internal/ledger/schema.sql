@@ -279,3 +279,29 @@ CREATE TABLE IF NOT EXISTS mandates (
 );
 
 CREATE INDEX IF NOT EXISTS mandates_eng_idx ON mandates (engagement_id, activated_at DESC);
+
+-- Conversation history (v0.12). Append-only: the operator should be able to scroll
+-- back and see exactly what was said, and what the model proposed at the time.
+-- No response bodies, no headers, no credentials - only what youkai said and what
+-- the operator typed.
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id            BIGSERIAL PRIMARY KEY,
+  engagement_id BIGINT NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
+  role          TEXT NOT NULL CHECK (role IN ('user','assistant')),
+  content       TEXT NOT NULL,
+  cards         JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS chat_messages_eng_idx ON chat_messages (engagement_id, id);
+
+CREATE OR REPLACE FUNCTION youkai_chat_append_only() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'chat_messages is append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS chat_messages_append_only_trg ON chat_messages;
+CREATE TRIGGER chat_messages_append_only_trg
+  BEFORE UPDATE OR DELETE ON chat_messages
+  FOR EACH ROW EXECUTE FUNCTION youkai_chat_append_only();

@@ -40,6 +40,11 @@ type mandateCtx struct {
 // treated as "no mandate": autonomy is never granted on a failed read.
 func (e *Engine) loadMandate(ctx context.Context) mandateCtx {
 	mc := mandateCtx{fetched: true}
+	// ADR-006 retracted the mandate as a default: without RequireHighAuth the
+	// engine never looks one up, so tier-2 always parks for a click.
+	if !e.cfg.RequireHighAuth {
+		return mc
+	}
 	m, err := e.cfg.Store.ActiveMandate(ctx, e.cfg.EngagementID)
 	if errors.Is(err, ledger.ErrNotFound) {
 		return mc

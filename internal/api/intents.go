@@ -67,6 +67,8 @@ func (s *Server) handleIntents(w http.ResponseWriter, r *http.Request, eng ledge
 			return
 		}
 		writeJSON(w, http.StatusOK, it)
+	case "reject":
+		s.rejectIntent(w, r, eng, iid)
 	case "retry":
 		s.retryIntent(w, r, eng, iid)
 	case "approve":
@@ -147,7 +149,19 @@ func (s *Server) approveIntent(w http.ResponseWriter, r *http.Request, eng ledge
 		writeErr(w, http.StatusNotFound, "%v", err)
 		return
 	}
+	// ADR-006: the approval is the human act. `high_auth_path` is accepted when a
+	// deployment wants the extra check, but it is no longer what makes an approval
+	// real - the authenticated token in the operator's browser is.
+	// A basis is what makes the audit line readable later. An empty one - or a
+	// stub like "ok" - is replaced with a real statement rather than rejected:
+	// the operator already clicked, and a failed call here teaches nothing.
+	if len([]rune(strings.TrimSpace(body.Basis))) < 8 {
+		body.Basis = "operator approved in the UI @ " + time.Now().Format("2006-01-02 15:04:05")
+	}
 	nonce := ""
+	if strings.TrimSpace(body.Operator) == "" {
+		body.Operator = "operator"
+	}
 	if body.HighAuthPath != "" {
 		if s.cfg.HighAuthKey == "" {
 			writeErr(w, http.StatusPreconditionRequired,
@@ -181,10 +195,13 @@ func (s *Server) approveIntent(w http.ResponseWriter, r *http.Request, eng ledge
 
 // executeIntent is the only tier-2 execution route.
 //
-// Two independent human conditions must both hold, and the approval is consumed
-// atomically before anything runs:
-//  1. an unconsumed operator approval whose fingerprint matches this intent
-//  2. for a network target, a valid high-auth record covering that target
+// One human condition is always required, and the approval is consumed atomically
+// before anything runs:
+//
+//  1. an unconsumed operator approval whose fingerprint matches this intent;
+//  2. only when the deployment sets RequireHighAuth, a valid high-auth record
+//     covering that target (ADR-006: optional, off by default);
+//  3. the passport must allow what the capability does.
 //
 // Exactly one capability executes, once. There is no batch form of this endpoint.
 func (s *Server) executeIntent(w http.ResponseWriter, r *http.Request, eng ledger.Engagement, iid int64) {
@@ -233,14 +250,19 @@ func (s *Server) executeIntent(w http.ResponseWriter, r *http.Request, eng ledge
 		return
 	}
 
-	// Condition 2: high-authorisation for anything that leaves the machine.
+	// Condition 2: high-authorisation, ONLY when the deployment asks for it.
 	//
-	// The target is not always in the arguments: an account capability names its
-	// targets in the manifest, so a resolver supplies them. A capability that is
-	// network-facing by nature needs the record even when no URL is derivable -
-	// "we could not work out the target" must never mean "skip the check".
+	// ADR-006: on a single-operator, loopback, token-authenticated console the
+	// human action that matters is the click on "approve". Requiring a second
+	// cryptographic ritual on top of it made operators either give up or share a
+	// weak key - which is *less* safe than one clear click. So the record is
+	// optional by default and comes back verbatim when RequireHighAuth is set.
+	//
+	// What does NOT change: condition 1 (a real, unconsumed approval row bound to
+	// this exact fingerprint) is still required, approval is still consumed before
+	// anything runs, and there is still no batch form of this endpoint.
 	targets := knownTargets(s.cfg.Dispatcher, ctx, eng.ID, it.Capability, it.Args)
-	needsHighAuth := requiresHighAuth(it.Capability) || anyURL(targets)
+	needsHighAuth := s.cfg.RequireHighAuth && (requiresHighAuth(it.Capability) || anyURL(targets))
 	if needsHighAuth {
 		if s.cfg.HighAuthKey == "" {
 			writeErr(w, http.StatusPreconditionRequired,
@@ -554,4 +576,43 @@ func (s *Server) retryIntent(w http.ResponseWriter, r *http.Request, eng ledger.
 		"intent_id": iid, "status": next,
 		"next": "重新排队:只读步骤会在下一轮自己跑,高风险步骤要你重新批准",
 	})
+}
+
+// rejectIntent closes the door on one step without running it.
+//
+// It exists because "approve / refuse" is the whole interaction the operator is
+// being offered in the conversation panel: a refusal must be recorded, not just
+// left hanging in needs_approval.
+func (s *Server) rejectIntent(w http.ResponseWriter, r *http.Request, eng ledger.Engagement, iid int64) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	var body struct {
+		Operator string `json:"operator"`
+		Reason   string `json:"reason"`
+	}
+	_ = decodeJSON(w, r, &body)
+	it, err := s.cfg.Store.Intent(r.Context(), eng.ID, iid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "%v", err)
+		return
+	}
+	if it.Status == ledger.StatusDone || it.Status == ledger.StatusActive {
+		writeErr(w, http.StatusBadRequest, "这一步已经执行过了,不能拒绝")
+		return
+	}
+	if err := s.cfg.Store.SetIntentStatus(r.Context(), eng.ID, iid, ledger.StatusBlocked); err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	line := "operator refused this step"
+	if body.Operator != "" {
+		line += " (" + body.Operator + ")"
+	}
+	if body.Reason != "" {
+		line += ": " + body.Reason
+	}
+	_ = s.cfg.Store.AppendTrace(r.Context(), eng.ID, iid, line)
+	writeJSON(w, http.StatusOK, map[string]any{"intent_id": iid, "status": ledger.StatusBlocked})
 }

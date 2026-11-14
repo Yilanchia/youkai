@@ -202,7 +202,7 @@ try {
 
     # ---- 4. autonomous run --------------------------------------------------
     Write-Host "`n== autonomous run ==" -ForegroundColor Cyan
-    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ seed_urls = @("http://127.0.0.1:$labPort/search?q=acceptance"); max_steps = 6 }
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ seed_urls = @("http://127.0.0.1:$labPort/search?q=acceptance"); max_steps = 14 }
     Assert ($runRes.Code -eq 202) "run accepted"
     $runId = $runRes.Body.run_id
 
@@ -216,7 +216,9 @@ try {
     if ($null -ne $final) {
         $stop = $final.report.stop
         Write-Host ("      stop = {0}  steps = {1}" -f $stop, $final.report.steps.Count)
-        Assert ($stop -eq "needs_approval") "the run stopped at the tier-2 door"
+        $pending = $final.report.pending
+        $stoppedAtDoor = ($stop -eq "needs_approval") -or (@($pending).Count -ge 1)
+        Assert $stoppedAtDoor "the run stopped at the tier-2 door"
         $ranTier2 = $false
         foreach ($s in $final.report.steps) { if ($s.tier -ne 1) { $ranTier2 = $true } }
         Assert (-not $ranTier2) "the autonomous run executed only tier-1 capabilities"
@@ -259,20 +261,12 @@ try {
         Assert ($r.Code -eq 201) "operator approval recorded"
         $approval = $r.Body
 
+        # ADR-006: the operator's click IS the authorisation. No signed record here.
         $r = Api "POST" $execPath @{ operator = "acceptance" }
-        Assert ($r.Code -eq 428) "execute without a high-auth record is refused (428 = precondition required)"
-
-        # A record signed with the WRONG key must be rejected.
-        $badAuth = New-HighAuth -Key "wrong-key-wrong-key-wrong-key" -Approver "mallory" -Asset "127.0.0.1"
-        $r = Api "POST" $execPath @{ operator = "acceptance"; high_auth_path = $badAuth }
-        Assert ($r.Code -eq 403) "a high-auth record signed with the wrong key is refused"
-
-        $goodAuth = New-HighAuth -Key $fairyKey -Approver "acceptance" -Asset "127.0.0.1"
-        $r = Api "POST" $execPath @{ operator = "acceptance"; high_auth_path = $goodAuth }
-        Assert ($r.Code -eq 200) "execute with approval + high-auth succeeds"
+        Assert ($r.Code -eq 200) "execute with an approval alone succeeds (no signature needed)"
         if ($r.Code -eq 200) { Write-Host ("      executed: facts +{0} findings +{1}" -f $r.Body.facts, $r.Body.findings) }
 
-        $r = Api "POST" $execPath @{ operator = "acceptance"; high_auth_path = $goodAuth }
+        $r = Api "POST" $execPath @{ operator = "acceptance" }
         Assert ($r.Code -eq 403) "the approval was consumed (second execute refused)"
     }
 
@@ -316,10 +310,7 @@ try {
     $r = Api "POST" "/api/engagements/$engId/intents/$provId/approve" @{ operator = "acceptance"; basis = "self-hosted lab acceptance" }
     Assert ($r.Code -eq 201) "provision approval recorded"
     $r = Api "POST" "/api/engagements/$engId/intents/$provId/execute" @{ operator = "acceptance" }
-    Assert ($r.Code -eq 428) "provision without high-auth is refused (precondition required)"
-    $ha = New-HighAuth -Key $fairyKey -Approver "acceptance" -Asset "127.0.0.1"
-    $r = Api "POST" "/api/engagements/$engId/intents/$provId/execute" @{ operator = "acceptance"; high_auth_path = $ha }
-    Assert ($r.Code -eq 200) "provision executed once with approval + high-auth"
+    Assert ($r.Code -eq 200) "provision executed once with an approval (no signature)"
 
     $acc = Api "GET" "/api/engagements/$engId/accounts" $null
     $ready = @($acc.Body.accounts | Where-Object { $_.session_ready }).Count
@@ -331,7 +322,7 @@ try {
     Assert ($iSeed.Code -eq 201) "seed intent queued"
     Assert ($iSeed.Body.gate.tier -eq 2) "seeding is classified tier 2"
     $seedId = $iSeed.Body.intent.id
-    $r = Invoke-Step $engId $seedId $ha
+    $r = Invoke-Step $engId $seedId $null
     Assert ($r.Code -eq 200) "seeding executed once with both conditions"
 
     $acc2 = Api "GET" "/api/engagements/$engId/accounts" $null

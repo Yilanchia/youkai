@@ -51,7 +51,15 @@ type fixture struct {
 	eng    ledger.Engagement
 }
 
+// newFixture builds the default server: no high-auth key, no RequireHighAuth.
 func newFixture(t *testing.T, highAuthKey string) *fixture {
+	t.Helper()
+	return newFixtureWith(t, func(c *Config) { c.HighAuthKey = highAuthKey })
+}
+
+// newFixtureWith lets a test change the server configuration (the tier-2 gate in
+// particular) without duplicating the whole setup.
+func newFixtureWith(t *testing.T, mutate func(*Config)) *fixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -84,11 +92,15 @@ func newFixture(t *testing.T, highAuthKey string) *fixture {
 	settings := config.New(store.Pool(), []byte("test-session-passphrase"))
 	plannerMgr := planner.NewManager(store)
 
-	srv, err := New(Config{
+	cfg := Config{
 		Addr: "127.0.0.1:0", Store: store, Dispatcher: disp,
-		ArtifactDir: t.TempDir(), HighAuthKey: highAuthKey, MaxSteps: 3,
+		ArtifactDir: t.TempDir(), MaxSteps: 3,
 		Settings: settings, Planner: plannerMgr,
-	})
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -262,9 +274,11 @@ func TestTierOneCannotBeApproved(t *testing.T) {
 	}
 }
 
-func TestExecuteRequiresApprovalThenHighAuthThenExecutesOnce(t *testing.T) {
-	key := "0123456789abcdef0123456789abcdef"
-	f := newFixture(t, key)
+// TestExecuteNeedsOnlyAnApprovalByDefault is the ADR-006 contract: one operator
+// click, no signature, exactly one execution, and the evidence still lands as a
+// candidate (a human step never self-verifies).
+func TestExecuteNeedsOnlyAnApprovalByDefault(t *testing.T) {
+	f := newFixture(t, "")
 	ctx := context.Background()
 
 	it, _, err := f.store.EnsureIntent(ctx, f.eng.ID, ledger.IntentSpec{
@@ -278,22 +292,83 @@ func TestExecuteRequiresApprovalThenHighAuthThenExecutesOnce(t *testing.T) {
 	execPath := fmt.Sprintf("/api/engagements/%d/intents/%d/execute", f.eng.ID, it.ID)
 	approvePath := fmt.Sprintf("/api/engagements/%d/intents/%d/approve", f.eng.ID, it.ID)
 
-	// 1) no approval -> refused, and nothing dispatched.
+	// 1) no approval row -> refused, nothing dispatched. The approval row is the
+	// human act; it is not optional, only the signature is.
 	if code, _ := f.do(t, http.MethodPost, execPath, map[string]any{"operator": "alice"}, nil); code != http.StatusForbidden {
-		t.Fatalf("execute without approval = %d", code)
+		t.Fatalf("execute without approval = %d, want 403", code)
 	}
 	if f.disp.calls != 0 {
 		t.Fatalf("capability ran without approval (%d calls)", f.disp.calls)
 	}
 
-	// 2) approval recorded.
-	if code, body := f.do(t, http.MethodPost, approvePath, map[string]any{
+	// 2) one UI click: operator + basis, no high_auth_path, no key on the server.
+	code, body := f.do(t, http.MethodPost, approvePath, map[string]any{
 		"operator": "alice", "basis": "self-hosted lab, ticket 42",
+	}, nil)
+	if code != http.StatusCreated {
+		t.Fatalf("approve = %d %v", code, body)
+	}
+
+	// 3) that approval is enough to run it - once.
+	code, body = f.do(t, http.MethodPost, execPath, map[string]any{"operator": "alice"}, nil)
+	if code != http.StatusOK {
+		t.Fatalf("execute with an approval = %d %v, want 200", code, body)
+	}
+	if f.disp.calls != 1 {
+		t.Fatalf("capability calls = %d, want 1", f.disp.calls)
+	}
+
+	// 4) consumed: a second execute is refused even with the same operator.
+	if code, _ := f.do(t, http.MethodPost, execPath, map[string]any{"operator": "alice"}, nil); code != http.StatusForbidden {
+		t.Fatalf("second execute = %d, want 403", code)
+	}
+	if f.disp.calls != 1 {
+		t.Fatalf("capability ran twice (%d)", f.disp.calls)
+	}
+
+	// 5) evidence landed, as candidates.
+	g, err := f.store.Graph(ctx, f.eng.ID)
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Facts) == 0 || len(g.Findings) == 0 {
+		t.Fatalf("evidence not ingested: facts=%d findings=%d", len(g.Facts), len(g.Findings))
+	}
+	for _, fd := range g.Findings {
+		if fd.State != ledger.FindingCandidate {
+			t.Fatalf("a human step produced a non-candidate finding: %q", fd.State)
+		}
+	}
+}
+
+// TestExecuteWithHighAuthRequired keeps the ADR-005 door available for
+// deployments that want it: same approval row, plus a verified signed record.
+func TestExecuteWithHighAuthRequired(t *testing.T) {
+	key := "0123456789abcdef0123456789abcdef"
+	f := newFixtureWith(t, func(c *Config) {
+		c.HighAuthKey = key
+		c.RequireHighAuth = true
+	})
+	ctx := context.Background()
+
+	it, _, err := f.store.EnsureIntent(ctx, f.eng.ID, ledger.IntentSpec{
+		Capability: "param",
+		Args:       map[string]any{"url": "http://127.0.0.1:9/s?q=1", "param": "q"},
+		Tier:       2, RequiresApproval: true, Rationale: "existence probe",
+	})
+	if err != nil {
+		t.Fatalf("seed intent: %v", err)
+	}
+	execPath := fmt.Sprintf("/api/engagements/%d/intents/%d/execute", f.eng.ID, it.ID)
+	approvePath := fmt.Sprintf("/api/engagements/%d/intents/%d/approve", f.eng.ID, it.ID)
+
+	if code, body := f.do(t, http.MethodPost, approvePath, map[string]any{
+		"operator": "alice", "basis": "self-hosted lab",
 	}, nil); code != http.StatusCreated {
 		t.Fatalf("approve = %d %v", code, body)
 	}
 
-	// 3) approval alone is not enough for a network target: high-auth is missing.
+	// Approval alone is refused in this mode.
 	if code, _ := f.do(t, http.MethodPost, execPath, map[string]any{"operator": "alice"}, nil); code != http.StatusPreconditionRequired {
 		t.Fatalf("execute without high-auth = %d, want 412", code)
 	}
@@ -301,7 +376,7 @@ func TestExecuteRequiresApprovalThenHighAuthThenExecutesOnce(t *testing.T) {
 		t.Fatal("capability ran without the high-auth condition")
 	}
 
-	// 4) a forged/incorrect high-auth record is refused.
+	// A record signed with the wrong key is refused.
 	badPath := writeHighAuth(t, key, "mallory", "http://127.0.0.1:9", time.Hour, "wrong-key")
 	if code, _ := f.do(t, http.MethodPost, execPath, map[string]any{
 		"operator": "alice", "high_auth_path": badPath,
@@ -312,7 +387,7 @@ func TestExecuteRequiresApprovalThenHighAuthThenExecutesOnce(t *testing.T) {
 		t.Fatal("capability ran with a bad high-auth record")
 	}
 
-	// 5) a record that does not cover the target is refused.
+	// A record that does not cover the target is refused.
 	otherPath := writeHighAuth(t, key, "alice", "https://elsewhere.example", time.Hour, key)
 	if code, _ := f.do(t, http.MethodPost, execPath, map[string]any{
 		"operator": "alice", "high_auth_path": otherPath,
@@ -323,7 +398,7 @@ func TestExecuteRequiresApprovalThenHighAuthThenExecutesOnce(t *testing.T) {
 		t.Fatal("capability ran with an out-of-coverage record")
 	}
 
-	// 6) both conditions satisfied -> exactly one execution.
+	// Both conditions -> one execution, then the approval is spent.
 	goodPath := writeHighAuth(t, key, "alice", "http://127.0.0.1:9", time.Hour, key)
 	code, body := f.do(t, http.MethodPost, execPath, map[string]any{
 		"operator": "alice", "high_auth_path": goodPath,
@@ -334,29 +409,10 @@ func TestExecuteRequiresApprovalThenHighAuthThenExecutesOnce(t *testing.T) {
 	if f.disp.calls != 1 {
 		t.Fatalf("capability calls = %d, want 1", f.disp.calls)
 	}
-
-	// 7) the approval was consumed: a second execute is refused.
 	if code, _ := f.do(t, http.MethodPost, execPath, map[string]any{
 		"operator": "alice", "high_auth_path": goodPath,
 	}, nil); code != http.StatusForbidden {
 		t.Fatalf("second execute = %d, want 403", code)
-	}
-	if f.disp.calls != 1 {
-		t.Fatalf("capability ran twice (%d)", f.disp.calls)
-	}
-
-	// 8) the intent is done and the evidence landed as facts + findings.
-	g, err := f.store.Graph(ctx, f.eng.ID)
-	if err != nil {
-		t.Fatalf("graph: %v", err)
-	}
-	if len(g.Facts) == 0 || len(g.Findings) == 0 {
-		t.Fatalf("evidence not ingested: facts=%d findings=%d", len(g.Facts), len(g.Findings))
-	}
-	for _, f := range g.Findings {
-		if f.State != ledger.FindingCandidate {
-			t.Fatalf("a human step produced a non-candidate finding: %q", f.State)
-		}
 	}
 }
 

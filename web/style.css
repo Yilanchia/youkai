@@ -200,3 +200,19 @@ pre.small { font-size: 11px; background: var(--bg); border: 1px solid var(--line
   margin: .6rem 1.2rem 0; padding: .5rem .8rem; border-radius: 9px;
   border: 1px solid #6a5a2f; background: #2a2413; color: #e8d9a8;
 }
+
+/* ---- v0.12: run state + approval cards in the conversation ---- */
+.run-state {
+  display: flex; align-items: center; gap: .5rem;
+  margin: 0 0 .7rem; padding: .5rem .75rem; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--card); font-size: 13px;
+}
+.run-state.wait { border-color: #6a5a2f; background: #2a2413; color: #e8d9a8; }
+.run-state.busy { border-color: #2c5a41; background: #14251c; color: var(--accent); }
+.run-state.done { color: var(--muted); }
+.approve-card {
+  border: 1px solid #6a5a2f; background: #221d10; border-radius: 10px;
+  padding: .7rem .85rem; margin: 0 0 .7rem;
+}
+.approve-card strong { color: #e8d9a8; }
+.approve-card p { margin: .3rem 0; }

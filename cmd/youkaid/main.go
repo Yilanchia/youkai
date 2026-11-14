@@ -47,6 +47,8 @@ func main() {
 	tokenFlag := flag.String("token", envOr("YOUKAI_TOKEN", ""), "API token (generated when empty)")
 	tokenFile := flag.String("token-file", envOr("YOUKAI_TOKEN_FILE", ""), "write the API token here (0600)")
 	noPlanner := flag.Bool("no-planner", false, "disable the LLM planner even if configured")
+	requireHighAuth := flag.Bool("require-high-auth", envOr("YOUKAI_REQUIRE_HIGH_AUTH", "") == "1",
+		"require a signed high-auth record on top of the approval for tier-2 steps (ADR-005 behaviour)")
 	flag.Parse()
 
 	if strings.TrimSpace(*dsn) == "" {
@@ -80,7 +82,11 @@ func main() {
 	// targets is possible at all. Absent means it is disabled, loudly.
 	highAuthKey, keyErr := discipline.KeyFromEnv()
 	if keyErr != nil {
-		log.Printf("WARNING: %s is not set - tier-2 execution against network targets is DISABLED (approvals still record)", discipline.HighAuthKeyEnv)
+		if *requireHighAuth {
+			log.Printf("WARNING: require-high-auth is ON but %s is not set - tier-2 network steps will be refused", discipline.HighAuthKeyEnv)
+		} else {
+			log.Printf("high-auth: %s not set; using UI approval for tier-2 (default since ADR-006)", discipline.HighAuthKeyEnv)
+		}
 	}
 
 	// Runtime configuration: the settings table is the UI's persistence, and the
@@ -95,17 +101,18 @@ func main() {
 	}
 
 	srv, err := api.New(api.Config{
-		Addr:        *addr,
-		Token:       *tokenFlag,
-		Store:       store,
-		Dispatcher:  dispatcher,
-		ArtifactDir: *artifacts,
-		HighAuthKey: highAuthKey,
-		Settings:    settings,
-		Planner:     plannerMgr,
-		PairSource:  pairSource{dispatcher},
-		MaxSteps:    *maxSteps,
-		Logger:      log.Default(),
+		Addr:            *addr,
+		Token:           *tokenFlag,
+		Store:           store,
+		Dispatcher:      dispatcher,
+		ArtifactDir:     *artifacts,
+		HighAuthKey:     highAuthKey,
+		RequireHighAuth: *requireHighAuth,
+		Settings:        settings,
+		Planner:         plannerMgr,
+		PairSource:      pairSource{dispatcher},
+		MaxSteps:        *maxSteps,
+		Logger:          log.Default(),
 	})
 	if err != nil {
 		fatalf("%v", err)
@@ -128,7 +135,8 @@ func main() {
 	log.Printf("open this URL in a browser (the token is in the fragment, not the request):")
 	log.Printf("  %s", url)
 	log.Printf("provider: %s", gate.Provider().Reason())
-	log.Printf("planner: %v (source=%s)   high-auth: %v", plannerMgr.Enabled(), plannerMgr.Source(), highAuthKey != "")
+	log.Printf("planner: %v (source=%s)   tier-2 gate: %s", plannerMgr.Enabled(), plannerMgr.Source(),
+		map[bool]string{true: "approval + signed high-auth record", false: "approval only (UI click)"}[*requireHighAuth])
 	if _, err := os.Stat(*accountsPath); err == nil {
 		log.Printf("accounts: manifest %s   sessions %s", *accountsPath, *sessionDir)
 	} else {

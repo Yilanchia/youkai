@@ -1,0 +1,16 @@
+{
+  "tier": "highest",
+  "basis": "操作员声明对 lycoreco.cn 有测试授权(向导确认 2026-11-14),范围为 https://lycoreco.cn,方法 GET/HEAD/OPTIONS,rps 5,上限 2000 请求",
+  "approver": "operator",
+  "assets": [
+    "lycoreco.cn"
+  ],
+  "actions": [
+    "read-only",
+    "tier2:param"
+  ],
+  "max_requests": 300,
+  "issued_at": "2026-11-14T16:03:44.981Z",
+  "expires_at": "2026-11-15T16:03:44.981Z",
+  "nonce": "nnlc0i59yom"
+}
