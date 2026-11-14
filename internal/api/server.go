@@ -310,18 +310,22 @@ func (s *Server) handleEngagements(w http.ResponseWriter, r *http.Request) {
 		var sc discipline.Scope
 		if len(body.Scope) > 0 {
 			if err := json.Unmarshal(body.Scope, &sc); err != nil {
-				writeErr(w, http.StatusBadRequest, "scope: %v", err)
+				writeErr(w, http.StatusBadRequest, "%v", err)
 				return
 			}
 			sc = *discipline.NewScope(sc)
 			if err := sc.Validate(); err != nil {
-				writeErr(w, http.StatusBadRequest, "scope: %v", err)
+				writeErr(w, http.StatusBadRequest, "%v", err)
 				return
 			}
 		}
 		e, err := s.cfg.Store.CreateEngagement(r.Context(), body.Name, sc)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if warns := scopeWarnings(sc); len(warns) > 0 {
+			writeJSON(w, http.StatusCreated, map[string]any{"engagement": e, "warnings": warns})
 			return
 		}
 		s.hub.publish("engagements", map[string]any{"type": "engagement", "id": e.ID, "name": e.Name})
@@ -460,6 +464,22 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request, eng ledger.Eng
 	}
 	_ = decodeJSON(w, r, &body)
 
+	// No passport, no action. Without this the run starts, derives steps that the
+	// guard then refuses one by one, and reports an idle run instead of telling the
+	// operator what is actually missing (found by the v0.5 E2E walkthrough).
+	var passport discipline.Scope
+	if len(eng.Scope) > 0 {
+		_ = json.Unmarshal(eng.Scope, &passport)
+	}
+	if len(passport.Include) == 0 {
+		writeErr(w, http.StatusBadRequest, "这个作业还没有护照(include 为空):youkai 不会在没有授权目标时动作,先填 scope")
+		return
+	}
+	if err := passport.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, "护照不可用:%v", err)
+		return
+	}
+
 	s.mu.Lock()
 	if existing, busy := s.running[eng.ID]; busy {
 		s.mu.Unlock()
@@ -522,6 +542,12 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request, eng ledger.Eng
 		status := rep.Stop
 		if err != nil {
 			status = engine.StopError
+		}
+		// A run that took steps and had every request refused by the passport must
+		// say so, instead of reporting whatever the last optional step complained
+		// about: "nothing was allowed" is the fact the operator needs.
+		if reason, overridden := s.blockedRunReason(context.Background(), eng.Name, rep); overridden {
+			rep.Reason = reason
 		}
 		_ = s.cfg.Store.FinishRun(context.Background(), run.ID, status, rep.Reason, len(rep.Steps), rep.Derived)
 		s.logger.Printf("youkai: run %d finished: %s (%d steps)", run.ID, status, len(rep.Steps))
@@ -715,3 +741,64 @@ func (s *Server) proposer() engine.Proposer {
 
 // LoadLLM resolves the startup LLM configuration: settings > environment > disabled.
 func (s *Server) LoadLLM(ctx context.Context) error { return s.installLLMFromStore(ctx) }
+
+// blockedRunReason explains a run whose requests the passport refused.
+//
+// Without it the operator sees the deterministic loop "finish" with a planner
+// message and has to dig into the audit log to learn that every request was
+// blocked (typically allow_private missing on a lab target). The guard is right to
+// refuse; the report should not hide it.
+func (s *Server) blockedRunReason(ctx context.Context, engagement string, rep engine.Report) (string, bool) {
+	if len(rep.Steps) == 0 {
+		return "", false
+	}
+	rows, err := s.cfg.Store.AuditTail(ctx, engagement, 1000)
+	if err != nil {
+		return "", false
+	}
+	allowed, blocked := 0, 0
+	reasons := map[string]int{}
+	for _, r := range rows {
+		switch r.Verdict {
+		case discipline.VerdictAllowed:
+			allowed++
+		case discipline.VerdictBlocked:
+			blocked++
+			reasons[r.Reason]++
+		}
+	}
+	if allowed > 0 || blocked == 0 {
+		return "", false
+	}
+	top := ""
+	best := 0
+	for reason, n := range reasons {
+		if n > best {
+			best, top = n, reason
+		}
+	}
+	return fmt.Sprintf("所有请求都被护照拦断(%d 次);原因:%s。若是自建靶场,检查 scope 的 allow_private 与 include。",
+		blocked, top), true
+}
+
+// scopeWarnings flags passports that will refuse their own targets at request
+// time. The guard is right to refuse; telling the operator up front saves a run
+// that does nothing but fill the audit log with blocks.
+func scopeWarnings(sc discipline.Scope) []string {
+	if sc.AllowPrivate {
+		return nil
+	}
+	var out []string
+	for _, host := range sc.Include {
+		h := host
+		if i := strings.IndexByte(h, ':'); i > 0 && !strings.Contains(h, "://") {
+			h = h[:i]
+		}
+		if h == "127.0.0.1" || h == "localhost" || h == "::1" {
+			out = append(out, fmt.Sprintf(
+				"include 里的 %s 是环回地址,但没开 allow_private:所有请求都会被 guard 拦断", host))
+			break
+		}
+	}
+	return out
+}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -271,7 +272,24 @@ func (s *Server) executeIntent(w http.ResponseWriter, r *http.Request, eng ledge
 		}
 	}
 
-	// Consume now: both preconditions hold, and the UPDATE is atomic, so two
+	// Condition 3: the passport must actually allow what this capability does.
+	//
+	// Without this the capability refuses *after* the approval was consumed, which
+	// burns the operator's single authorisation and leaves the intent stuck
+	// (found by the v0.5 E2E walkthrough).
+	if sw := requiredScopeSwitch(it.Capability); sw != "" {
+		var passport discipline.Scope
+		if len(eng.Scope) > 0 {
+			_ = json.Unmarshal(eng.Scope, &passport)
+		}
+		if enabled, ok := scopeSwitchValue(passport, sw); !ok || !enabled {
+			writeErr(w, http.StatusPreconditionRequired,
+				"这个能力需要护照里的 %s=true,当前为 false:先放宽护照再执行(本次未消费批准)", sw)
+			return
+		}
+	}
+
+	// Consume now: every precondition holds, and the UPDATE is atomic, so two
 	// concurrent requests cannot both get through.
 	ap, err := s.cfg.Store.ConsumeApproval(ctx, eng.ID, iid)
 	if err != nil {
@@ -288,7 +306,11 @@ func (s *Server) executeIntent(w http.ResponseWriter, r *http.Request, eng ledge
 	elapsed := time.Since(started).Milliseconds()
 	if derr != nil {
 		msg := "capability failed: " + derr.Error()
-		_ = s.cfg.Store.AppendTrace(ctx, eng.ID, iid, msg+" (approval already consumed; no retry)")
+		// Leaving the intent "active" would hide it from the workbench forever: it
+		// is neither running nor waiting. Put it back in front of the human; the
+		// approval was consumed, so re-approving is the explicit next step.
+		_ = s.cfg.Store.SetIntentStatus(ctx, eng.ID, iid, ledger.StatusNeedsApproval)
+		_ = s.cfg.Store.AppendTrace(ctx, eng.ID, iid, msg+" (approval consumed; fix the cause, then approve again)")
 		writeErr(w, http.StatusBadGateway, "%s", msg)
 		return
 	}
@@ -453,4 +475,38 @@ func anyURL(targets []string) bool {
 		}
 	}
 	return false
+}
+
+// requiredScopeSwitch names the passport switch a tier-2 capability needs.
+//
+// These are deliberately not folded into one "allow dangerous things" flag: each
+// one unlocks a different class of action, so an operator widens exactly what they
+// mean to.
+func requiredScopeSwitch(capability string) string {
+	switch capability {
+	case "param", "param_adaptive":
+		return "allow_active_probes"
+	case "waf":
+		return "allow_waf_probe"
+	case "accounts_seed", "object_seed":
+		return "allow_object_seeding"
+	case "accounts_register":
+		return "allow_account_provisioning"
+	}
+	return ""
+}
+
+// scopeSwitchValue reads a switch by name.
+func scopeSwitchValue(s discipline.Scope, name string) (bool, bool) {
+	switch name {
+	case "allow_active_probes":
+		return s.AllowActiveProbes, true
+	case "allow_waf_probe":
+		return s.AllowWAFProbe, true
+	case "allow_object_seeding":
+		return s.AllowObjectSeeding, true
+	case "allow_account_provisioning":
+		return s.AllowAccountProvisioning, true
+	}
+	return false, false
 }

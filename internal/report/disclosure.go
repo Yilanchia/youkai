@@ -216,7 +216,7 @@ func writeAuthStatementMD(sb *strings.Builder, scope ScopeSummary) {
 	if len(scope.Exclude) > 0 {
 		fmt.Fprintf(sb, "- 排除范围:%s\n", strings.Join(scope.Exclude, ", "))
 	}
-	if scope.ExpiresAt != "" {
+	if !isZeroTime(scope.ExpiresAt) {
 		fmt.Fprintf(sb, "- 授权到期:%s\n", scope.ExpiresAt)
 	}
 	if len(scope.Methods) > 0 {
@@ -235,7 +235,7 @@ func writeAuthStatementHTML(sb *strings.Builder, scope ScopeSummary) {
 	if len(scope.Exclude) > 0 {
 		fmt.Fprintf(sb, "<li>排除范围:%s</li>", html.EscapeString(strings.Join(scope.Exclude, ", ")))
 	}
-	if scope.ExpiresAt != "" {
+	if !isZeroTime(scope.ExpiresAt) {
 		fmt.Fprintf(sb, "<li>授权到期:%s</li>", html.EscapeString(scope.ExpiresAt))
 	}
 	if len(scope.Methods) > 0 {
@@ -254,4 +254,10 @@ func writeDisclosureFindingMD(sb *strings.Builder, n int, f FindingReport) {
 	}
 	fmt.Fprintf(sb, "- 修复建议:%s\n", remediationFor(f))
 	fmt.Fprintf(sb, "- 证据锚点:`%s`(可按 request_id 调取)\n\n", strings.Join(f.Evidence.RequestIDs, "`, `"))
+}
+
+// isZeroTime reports the Go zero timestamp, which JSON renders as
+// "0001-01-01T00:00:00Z" - a value that means "no expiry", not "expired in year 1".
+func isZeroTime(v string) bool {
+	return v == "" || strings.HasPrefix(v, "0001-01-01")
 }

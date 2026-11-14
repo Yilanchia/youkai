@@ -20,6 +20,7 @@
 package discipline
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -433,4 +434,68 @@ func patternMatchesHostOnly(pattern, host string) bool {
 		return strings.HasSuffix(host, suffix) && len(host) > len(suffix)
 	}
 	return host == pat
+}
+
+// UnmarshalJSON accepts the empty string for the two timestamps.
+//
+// This exists because a client that does not use an expiry stamps the field with
+// "" rather than omitting it, and time.Time's default decoder rejects that with a
+// parse error that says nothing about the real problem. "No expiry" is a legitimate
+// state (Validate rejects a passport only when an expiry exists and has passed), so
+// the empty string is read as "unset". A malformed non-empty value still fails, and
+// the message names the field.
+func (s *Scope) UnmarshalJSON(data []byte) error {
+	aux := struct {
+		Project                  string   `json:"project"`
+		Include                  []string `json:"include"`
+		Exclude                  []string `json:"exclude"`
+		Methods                  []string `json:"methods"`
+		AllowPrivate             bool     `json:"allow_private"`
+		AllowActiveProbes        bool     `json:"allow_active_probes"`
+		AllowWAFProbe            bool     `json:"allow_waf_probe"`
+		AllowObjectSeeding       bool     `json:"allow_object_seeding"`
+		AllowAccountProvisioning bool     `json:"allow_account_provisioning"`
+		RPS                      float64  `json:"rps"`
+		MaxRequests              int      `json:"max_requests"`
+		TimeoutMS                int      `json:"timeout_ms"`
+		MaxBytes                 int64    `json:"max_bytes"`
+		MaxRedirects             int      `json:"max_redirects"`
+		MaxPages                 int      `json:"max_pages"`
+		VerifyTLS                bool     `json:"verify_tls"`
+		Basis                    string   `json:"basis"`
+		Operator                 string   `json:"operator"`
+		ExpiresAt                string   `json:"expires_at"`
+		CreatedAt                string   `json:"created_at"`
+	}{}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	exp, err := parseTimeOrZero(aux.ExpiresAt)
+	if err != nil {
+		return fmt.Errorf("scope: expires_at: %w", err)
+	}
+	created, err := parseTimeOrZero(aux.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("scope: created_at: %w", err)
+	}
+	*s = Scope{
+		Project: aux.Project, Include: aux.Include, Exclude: aux.Exclude, Methods: aux.Methods,
+		AllowPrivate: aux.AllowPrivate, AllowActiveProbes: aux.AllowActiveProbes,
+		AllowWAFProbe: aux.AllowWAFProbe, AllowObjectSeeding: aux.AllowObjectSeeding,
+		AllowAccountProvisioning: aux.AllowAccountProvisioning,
+		RPS:                      aux.RPS, MaxRequests: aux.MaxRequests, TimeoutMS: aux.TimeoutMS,
+		MaxBytes: aux.MaxBytes, MaxRedirects: aux.MaxRedirects, MaxPages: aux.MaxPages,
+		VerifyTLS: aux.VerifyTLS, Basis: aux.Basis, Operator: aux.Operator,
+		ExpiresAt: exp, CreatedAt: created,
+	}
+	return nil
+}
+
+// parseTimeOrZero reads RFC3339, treating "" as unset.
+func parseTimeOrZero(v string) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339, v)
 }

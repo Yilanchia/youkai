@@ -343,9 +343,13 @@ function tierTag(tier) {
 
 function renderApprovals(host) {
   const pending = pendingIntents();
-  banner(pending.length
-    ? "有 " + pending.length + " 个动作停在门口。youkai 不会批准、也不会执行它们 —— 只有你能。"
-    : "");
+  // The pending notice belongs INSIDE this view. It must not go through banner():
+  // render() runs on every stream tick, and a banner written here would wipe the
+  // error message an operator is still reading (found by the v0.5 E2E walkthrough).
+  if (pending.length) {
+    host.appendChild(el("p", { class: "hint" },
+      "有 " + pending.length + " 个动作停在门口。youkai 不会批准、也不会执行它们 —— 只有你能。"));
+  }
 
   if (pending.length === 0) {
     host.appendChild(el("div", { class: "empty" },
@@ -396,7 +400,13 @@ function approveControls(it) {
   const status = el("span", { class: "hint" });
   const approveBtn = el("button", { class: "primary" }, "批准这一步");
   const execBtn = el("button", { class: "ghost" }, "执行这一步（一次性）");
-  execBtn.disabled = true;
+  // Derive the button state from the ledger, not from what was clicked here: the
+  // stream re-renders this card every few seconds, and a local "I just approved"
+  // flag would reset the execute button while the approval still stands (found by
+  // the v0.5 E2E walkthrough: you approve, and then cannot execute).
+  execBtn.disabled = !it.approved;
+  approveBtn.disabled = !!it.approved;
+  if (it.approved) status.textContent = "已批准(未执行)。执行一次后即被消费。";
 
   approveBtn.addEventListener("click", async () => {
     banner("");
@@ -913,8 +923,9 @@ function openScopeModal(mode) {
       operator: operator.value.trim(),
       max_requests: Number(maxReq.value || 2000),
       rps: Number(rps.value || 5),
-      expires_at: normExpiry(expires.value),
     };
+    const exp = normExpiry(expires.value);
+    if (exp) body.expires_at = exp;   // empty means "no expiry": omit rather than send ""
     for (const [k] of switchDefs) body[k] = switchBoxes[k].checked;
     try {
       if (editing) {
@@ -922,15 +933,20 @@ function openScopeModal(mode) {
           method: "PUT",
           body: JSON.stringify({ scope: body, updated_by: operator.value.trim() || "operator" }),
         });
-      } else {
-        await api("/api/engagements", {
-          method: "POST",
-          body: JSON.stringify({ name: name.value.trim(), scope: body }),
-        });
+        closeModal();
+        await loadEngagements();
+        banner("护照已更新并记入审计。", "ok");
+        return;
       }
+      const created = await api("/api/engagements", {
+        method: "POST",
+        body: JSON.stringify({ name: name.value.trim(), scope: body }),
+      });
       closeModal();
       await loadEngagements();
-      banner(editing ? "护照已更新并记入审计。" : "作业已创建。", "ok");
+      const warns = (created && created.warnings) || [];
+      banner(warns.length ? "作业已创建,但护照会拦断自己的目标:" + warns.join(";") : "作业已创建。",
+        warns.length ? "warn" : "ok");
     } catch (e) {
       banner("保存失败:" + e.message);
     }
