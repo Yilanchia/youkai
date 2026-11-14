@@ -653,9 +653,29 @@ function renderGraph(host) {
   host.appendChild(el("div", { class: "sec" }, `事实 (${g.facts.length})`));
   host.appendChild(simpleTable(["id", "statement", "request_id"],
     g.facts.map((f) => [f.id, short(f.statement, 130), (f.evidence && f.evidence.request_id) || "—"])));
-  host.appendChild(el("div", { class: "sec" }, `意图 (${g.intents.length})`));
+  // Process memory: what each executed step did, and how much of each host
+  // is already covered. Read-only projection of intents.trace (v0.7).
+  const doneIntents = g.intents.filter((i) => i.trace);
+  if (doneIntents.length) {
+    const byHost = {};
+    for (const i of doneIntents) {
+      const u = (i.args && i.args.url) || "";
+      const m = u.match(/^https?:\/\/([^/]+)/i);
+      const host = m ? m[1] : "(无目标)";
+      byHost[host] = (byHost[host] || 0) + 1;
+    }
+    host.appendChild(el("p", { class: "hint" },
+      "已执行步骤按目标:" + Object.entries(byHost).map(([h, n]) => h + " × " + n).join(" · ")));
+  }
   host.appendChild(simpleTable(["id", "capability", "tier", "status", "rationale"],
     g.intents.map((i) => [i.id, i.capability, i.tier, i.status, short(i.rationale, 90)])));
+  if (doneIntents.length) {
+    host.appendChild(el("div", { class: "sec" }, `已执行步骤 (${doneIntents.length})`));
+    host.appendChild(simpleTable(["id", "capability", "trace"],
+      doneIntents.map((i) => [i.id, i.capability, short(i.trace, 160)])));
+    host.appendChild(el("p", { class: "hint" },
+      "这些 trace 会被检索后喂给规划器(同目标已做的检查不再重复派生);账本里只有能力名、计数与 request_id。"));
+  }
   host.appendChild(el("div", { class: "sec" }, `血缘边 (${g.edges.length})`));
   host.appendChild(simpleTable(["from", "rel", "to"],
     g.edges.slice(0, 200).map((e) => [`${e.from_kind}#${e.from_id}`, e.rel, `${e.to_kind}#${e.to_id}`])));

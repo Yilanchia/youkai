@@ -33,6 +33,9 @@ type Store interface {
 	EnsureIntent(ctx context.Context, engagementID int64, spec ledger.IntentSpec) (ledger.Intent, bool, error)
 	SetIntentStatus(ctx context.Context, engagementID, id int64, status string) error
 	AppendTrace(ctx context.Context, engagementID, id int64, line string) error
+	// SearchTraces reads back what past steps did: the derivation guard and the
+	// planner section both use it.
+	SearchTraces(ctx context.Context, engagementID int64, q ledger.TraceQuery) ([]ledger.TraceHit, error)
 	Ingest(ctx context.Context, engagementID int64, runID *int64, intentID *int64, obs ledger.Observation) (ledger.IngestResult, error)
 	UpsertAsset(ctx context.Context, engagementID int64, seed ledger.AssetSeed) (int64, error)
 	FinishRun(ctx context.Context, runID int64, status, stopReason string, steps, derived int) error
@@ -75,6 +78,11 @@ type ProposeRequest struct {
 	Graph        ledger.GraphView
 	Allowed      []string
 	RunID        int64
+	// PriorWork is what this chain already did, newest last. It lets the model
+	// spend its budget on unknown ground instead of re-proposing a check that
+	// already ran. It is a projection of our own trace lines: no response bodies,
+	// no headers, no credentials.
+	PriorWork []ledger.TraceHit
 }
 
 // Stop reasons.
@@ -156,6 +164,9 @@ type Report struct {
 // Engine runs bounded explorations.
 type Engine struct {
 	cfg Config
+	// priorWork is the trail snapshot for the current derive pass. It is refreshed
+	// at the start of every pass and never mutated elsewhere.
+	priorWork []ledger.TraceHit
 }
 
 // New builds an engine.
@@ -515,6 +526,7 @@ func (e *Engine) propose(ctx context.Context, g ledger.GraphView, runID int64) (
 		Graph:        g,
 		Allowed:      e.cfg.AllowedTools,
 		RunID:        runID,
+		PriorWork:    e.priorForPrompt(),
 	})
 	if err != nil {
 		return 0, err
@@ -585,4 +597,16 @@ func joinLimited(items []string, max int) string {
 		out += s
 	}
 	return out
+}
+
+// priorForPrompt returns a bounded trail snapshot for the planner prompt.
+func (e *Engine) priorForPrompt() []ledger.TraceHit {
+	if len(e.priorWork) == 0 {
+		return nil
+	}
+	const maxPrior = 40
+	if len(e.priorWork) > maxPrior {
+		return e.priorWork[len(e.priorWork)-maxPrior:]
+	}
+	return e.priorWork
 }

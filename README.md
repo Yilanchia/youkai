@@ -272,6 +272,21 @@ Fetch 门管辖的 CDP 会话 —— 那就是未受闸出口。"无未闸请求
 
 无 Chrome/Edge → `ErrUnavailable` + 明确原因,不伪造。
 
+## 引擎:过程记忆(跨轮检索)
+
+引擎每执行一步都会把结果写成一行结构化 trace(`capability/ok/tier/facts/findings/request_ids[/SENSITIVE]`),
+存进 `intents.trace`。**这些 trace 会被读回来复用**:
+
+- `ledger.SearchTraces(engagement, {capability, host, keyword, limit})` —— 只读、按作业限定、
+  按 `intent_id` 稳定排序、目标归一成 `host/path`;两次检索同一账本结果一致。
+- **派生守卫**:同一 `capability + 目标` 已完成 → 不再派生。只拦"检查这个 endpoint"类能力
+  (`probe/scan/headers/cors/exposures/redirect_check/fingerprint/browser`),带选择器
+  (`param/marker/session*/headers` 或非只读方法)的一律不拦 —— 那是同一处的新问题。
+- **喂 planner**:`ProposeRequest.PriorWork` 带最近 40 条,prompt 里是一段
+  「已执行过的步骤(不要重复)…」。它由我们自己的 trace 拼成,**不取目标正文**,不引入新的注入面;
+  存档的 `prompt` 就是完整输入,回放即可还原模型当时看到的内容。
+- 纯读:不发包、不碰 guard、不碰档位墙;trace 只有能力名/计数/request_id,无正文无凭据。
+
 ## 证据与披露(Proof-Carrying Pentest)
 
 报告不是"扫到了什么"的回显,而是**第三方照着就能复核**的成品。`internal/report` 是纯函数
@@ -312,7 +327,7 @@ go test ./...       # 全绿(默认并行;migrate 用会话 advisory lock 串行
 
 `scripts/acceptance-v02.ps1` 把这些连同一轮真机只读链、档 2 双条件(含 high-auth 缺失返 428)、
 账号层 provision/seed、浏览器越界拦断、报告生成,全部做成可重放断言(独立数据库、独立 workspace,不污染真实账本)。
-逐模块证据见 [docs/IMPL-STATUS-v0.6.md](docs/IMPL-STATUS-v0.6.md)(v0.3 账号层/浏览器、v0.4 配置面、v0.5 证据闭环、v0.6 登录态浏览器)。
+逐模块证据见 [docs/IMPL-STATUS-v0.7.md](docs/IMPL-STATUS-v0.7.md)(v0.3 账号层/浏览器、v0.4 配置面、v0.5 证据闭环、v0.6 登录态浏览器、v0.7 过程记忆)。
 
 ## 设计取舍与未做
 

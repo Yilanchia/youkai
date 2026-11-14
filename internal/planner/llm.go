@@ -263,6 +263,8 @@ func buildPrompt(req engine.ProposeRequest, allowed []string) string {
 	writeIntents(&b, g)
 	writeFindings(&b, g)
 
+	writePriorWork(&b, req.PriorWork)
+
 	b.WriteString("\n可用只读能力白名单(只能用这些 capability):\n")
 	sortStrings(allowed)
 	for _, a := range allowed {
@@ -369,4 +371,29 @@ func (p *Planner) Probe(ctx context.Context) (time.Duration, error) {
 		return time.Since(start), err
 	}
 	return time.Since(start), nil
+}
+
+// writePriorWork renders the "already done" section.
+//
+// It exists because the model otherwise re-proposes checks that already ran: the
+// graph shows facts, not the trail that produced them. The section is built from
+// our own trace lines (capability + target + counters), never from target content,
+// so it adds no injection surface. It also tells the model what "do not repeat"
+// means here: a step may be re-run only when a new fact makes it worth it.
+func writePriorWork(b *strings.Builder, prior []ledger.TraceHit) {
+	if len(prior) == 0 {
+		return
+	}
+	b.WriteString("\n已执行过的步骤(不要重复;只有出现新事实使重做更有价值时才可以再做):\n")
+	start := 0
+	if len(prior) > 40 {
+		start = len(prior) - 40
+	}
+	for _, h := range prior[start:] {
+		target := h.Target
+		if target == "" {
+			target = "(无目标)"
+		}
+		fmt.Fprintf(b, "- %s %s → %s\n", h.Capability, target, h.Summary)
+	}
 }

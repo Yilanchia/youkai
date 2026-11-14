@@ -641,3 +641,69 @@ func TestSensitiveScan(t *testing.T) {
 		}
 	}
 }
+
+// SearchTraces is the read side of the fake store: the engine may ask what it has
+// already done (the v0.7 derivation guard). The fake keeps the same projection
+// shape so the guard is exercised, not bypassed.
+func (f *fakeStore) SearchTraces(_ context.Context, engagementID int64, q ledger.TraceQuery) ([]ledger.TraceHit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []ledger.TraceHit
+	for _, it := range f.intents {
+		if it.EngagementID != engagementID || it.Trace == "" {
+			continue
+		}
+		if q.Capability != "" && it.Capability != q.Capability {
+			continue
+		}
+		target := ledger.TargetKey(it.Args)
+		out = append(out, ledger.TraceHit{
+			IntentID: it.ID, Capability: it.Capability, Tier: it.Tier,
+			Status: it.Status, Target: target, Summary: it.Trace,
+		})
+	}
+	return out, nil
+}
+
+// TestDeriveDoesNotRepeatACoveredCheck is the v0.7 acceptance test for the guard:
+// a check whose trace says it already ran is not derived again.
+func TestDeriveDoesNotRepeatACoveredCheck(t *testing.T) {
+	store := newFakeStore()
+	store.scope = scopeJSON(t, "127.0.0.1:18080")
+	e := newEngine(t, store, &fakeDispatcher{}, Config{MaxSteps: 1})
+
+	// Seed the trail as if a probe already ran against the git path.
+	it, _, err := store.EnsureIntent(context.Background(), 1, ledger.IntentSpec{
+		Capability: "probe",
+		Args:       map[string]any{"url": "http://127.0.0.1:18080/.git/config"},
+		Tier:       1,
+	})
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if err := store.SetIntentStatus(context.Background(), 1, it.ID, ledger.StatusDone); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if err := store.AppendTrace(context.Background(), 1, it.ID,
+		"capability=probe ok=true tier=1 facts=1 findings=1 request_ids=R0001-aaaa"); err != nil {
+		t.Fatalf("trace: %v", err)
+	}
+
+	if _, err := e.derive(context.Background()); err != nil {
+		t.Fatalf("derive: %v", err)
+	}
+	// Other rules may still derive new work (the scan of the surface, for instance);
+	// what must NOT happen is a second probe of the same endpoint.
+	probes := 0
+	for _, it := range store.intents {
+		if it.Capability != "probe" {
+			continue
+		}
+		if u, _ := it.Args["url"].(string); strings.Contains(u, "/.git/config") {
+			probes++
+		}
+	}
+	if probes != 1 {
+		t.Fatalf("probe intents for the covered endpoint = %d, want 1 (the guard failed)", probes)
+	}
+}

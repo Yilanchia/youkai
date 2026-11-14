@@ -35,6 +35,18 @@ func (e *Engine) derive(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
+	// What this chain has already done. It is used as a derivation guard below: a
+	// check that already completed against the same endpoint is not re-derived, so
+	// the planning budget goes to what is still unknown. Retrieval is read-only and
+	// scoped to this engagement (see ledger.SearchTraces).
+	prior, err := e.cfg.Store.SearchTraces(ctx, e.cfg.EngagementID, ledger.TraceQuery{Limit: 100})
+	if err != nil {
+		// Memory is an optimisation, never a prerequisite: without it the chain
+		// simply re-derives, which the fingerprint dedupe already bounds.
+		prior = nil
+	}
+	e.priorWork = prior
+
 	added := 0
 	rules := []func(context.Context, ledger.GraphView) ([]derivation, error){
 		e.ruleBootstrapAssets,
@@ -50,6 +62,9 @@ func (e *Engine) derive(ctx context.Context) (int, error) {
 			return added, err
 		}
 		for _, d := range ds {
+			if e.alreadyCovered(prior, d) {
+				continue
+			}
 			spec := ledger.IntentSpec{
 				Capability:   d.capability,
 				Args:         d.args,
@@ -406,4 +421,59 @@ func (e *Engine) ruleBolaCompare(ctx context.Context, _ ledger.GraphView) ([]der
 		})
 	}
 	return out, nil
+}
+
+// coveredByTrace lists the capabilities whose meaning is "check THIS endpoint".
+//
+// The guard is deliberately narrow: it only suppresses a repeat of the same check
+// against the same endpoint. A derivation that carries a selector (a parameter, a
+// marker, a session) is a different question about the same place, and those are
+// never suppressed - that is where new evidence comes from.
+var coveredByTrace = map[string]bool{
+	"probe": true, "fingerprint": true, "scan": true, "headers": true,
+	"cors": true, "exposures": true, "redirect_check": true, "browser": true,
+}
+
+// alreadyCovered reports whether this derivation repeats completed work.
+func (e *Engine) alreadyCovered(prior []ledger.TraceHit, d derivation) bool {
+	if !coveredByTrace[d.capability] {
+		return false
+	}
+	// Any selector makes it a new question. "method" only counts when it is not a
+	// read: every probe carries method=GET, and a POST probe is a different, tier-2
+	// question that must still be proposed.
+	for _, key := range []string{"param", "marker", "session", "session_a", "session_b", "headers"} {
+		if v, ok := d.args[key]; ok && v != nil && v != "" {
+			return false
+		}
+	}
+	if m, ok := d.args["method"].(string); ok {
+		switch strings.ToUpper(strings.TrimSpace(m)) {
+		case "", "GET", "HEAD", "OPTIONS":
+		default:
+			return false
+		}
+	}
+	target := ledger.TargetKey(d.args)
+	if target == "" {
+		return false
+	}
+	return ledger.Covered(prior, d.capability, target)
+}
+
+// targetKey normalises an intent's target the same way SearchTraces does, so the
+// guard compares like with like.
+func targetKey(args map[string]any) string {
+	raw := ""
+	if s, ok := args["url"].(string); ok {
+		raw = s
+	}
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Host) + u.EscapedPath()
 }

@@ -626,7 +626,31 @@ try {
         Assert ($cross[0].evidence.injected_requests -eq 0) "the credential did NOT follow to another host"
     }
 
-    # ---- 14. database-level invariants -------------------------------------
+    # ---- 14. process memory: no repeated probe of the same endpoint --------
+    Write-Host "`n== trace memory ==" -ForegroundColor Cyan
+
+    $before = (Api "GET" "/api/engagements/$engId/graph" $null).Body
+    $probesBefore = @($before.intents | Where-Object { $_.capability -eq "probe" -and ($_.args.url -match "/\.git/config") }).Count
+    Assert ($probesBefore -ge 1) "a probe of the git path already ran in this engagement"
+
+    # Run again with the same seed: the guard must not derive that probe twice.
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ max_steps = 6; seed_urls = @("http://127.0.0.1:$labPort/search?q=acceptance") }
+    Assert ($runRes.Code -eq 202) "second run accepted"
+    for ($i = 0; $i -lt 180; $i++) {
+        Start-Sleep -Milliseconds 500
+        $r = Api "GET" "/api/engagements/$engId/runs/$($runRes.Body.run_id)" $null
+        if ($r.Body.done) { break }
+    }
+    $after = (Api "GET" "/api/engagements/$engId/graph" $null).Body
+    $probesAfter = @($after.intents | Where-Object { $_.capability -eq "probe" -and ($_.args.url -match "/\.git/config") }).Count
+    Assert ($probesAfter -eq $probesBefore) "the same endpoint was not probed twice (trace guard)"
+
+    # The trail itself is available to the planner as process memory.
+    $done = @($after.intents | Where-Object { $_.trace -and $_.trace -ne "" })
+    Assert ($done.Count -ge 1) "executed steps carry a trace"
+    Assert (($done | ForEach-Object { $_.trace } | Out-String) -notmatch "sess-alice|Cookie") "traces carry no credentials"
+
+    # ---- 15. database-level invariants -------------------------------------
     Write-Host "`n== database guards ==" -ForegroundColor Cyan
     $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE audit_log SET status=999;" 2>&1 | Out-String
     Assert ($out -match "append-only") "audit_log refuses UPDATE at the database level"
