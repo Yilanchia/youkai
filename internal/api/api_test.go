@@ -60,15 +60,16 @@ func newFixture(t *testing.T, highAuthKey string) *fixture {
 		t.Skipf("no PostgreSQL (%v); skipping API integration tests", err)
 	}
 	t.Cleanup(store.Close)
-	// One global settings row backs "the LLM configuration", so each test starts
-	// from an empty one instead of inheriting the previous test's values. Scoped to
-	// that key on purpose: other packages' tests may hold settings rows of their own
-	// while this package runs in parallel.
-	if _, err := store.Pool().Exec(ctx, `DELETE FROM settings WHERE key = $1`, config.KeyLLM); err != nil {
-		t.Fatalf("clear settings: %v", err)
-	}
+	// Migrate FIRST: on a clean database (CI) the settings table does not exist
+	// yet, and the per-test cleanup below would fail before anything ran.
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+	// One global settings row backs "the LLM configuration", so each test starts
+	// from an empty one. Scoped to that key on purpose: other packages' tests may
+	// hold settings rows of their own while this package runs in parallel.
+	if _, err := store.Pool().Exec(ctx, `DELETE FROM settings WHERE key = $1`, config.KeyLLM); err != nil {
+		t.Fatalf("clear settings: %v", err)
 	}
 
 	disp := &fakeDispatcher{obs: ledger.Observation{
@@ -78,7 +79,6 @@ func newFixture(t *testing.T, highAuthKey string) *fixture {
 		}},
 		Findings: []ledger.FindingSeed{{Title: "SSTI 存在性", Severity: "high", Where: "http://127.0.0.1:9/s"}},
 	}}
-
 	// Runtime configuration: a settings store with a passphrase, and a planner
 	// manager that starts disabled (tests install what they need).
 	settings := config.New(store.Pool(), []byte("test-session-passphrase"))
