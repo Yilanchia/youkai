@@ -66,7 +66,20 @@ jobs:
       - name: test
         # No -short: the browser tests run when a Chromium is present and skip
         # cleanly when it is not. The browser and its gate are part of what we ship.
-        run: go test ./... -count=1 -timeout 10m
+        #
+        # Failures are re-emitted as workflow annotations. Step logs need an
+        # authenticated session, annotations are public - so a red run stays
+        # diagnosable from outside without handing out a token.
+        run: |
+          set +e
+          go test ./... -count=1 -timeout 10m 2>&1 | tee /tmp/test.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E "^(--- FAIL|FAIL[[:space:]]|panic:)|_test\.go:[0-9]+:" /tmp/test.log \
+              | head -60 \
+              | while IFS= read -r line; do echo "::error::${line}"; done
+          fi
+          exit "$status"
 
       - name: ensure the binary starts and refuses to run without a database
         run: |
