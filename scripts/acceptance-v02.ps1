@@ -473,7 +473,75 @@ try {
     Assert ($out -match "allow_object_seeding") "scope widening is audited"
     Assert ($out -match "acceptance") "the scope audit names the operator"
 
-    # ---- 12. database-level invariants -------------------------------------
+    # ---- 12. proof-carrying report: four evidence, snapshots, SARIF, disclosure
+    Write-Host "`n== evidence report ==" -ForegroundColor Cyan
+
+    # The engine has already produced findings by now; grade them.
+    $r = Api "GET" "/api/engagements/$engId/report" $null
+    Assert ($r.Code -eq 200) "report bundle renders"
+    Assert ($r.Body.schema -eq "YoukaiReport/v1") "report declares its schema"
+    Assert ($r.Body.coverage.requests -gt 0) "coverage counts the requests that actually happened"
+    Assert ($r.Raw -notmatch "全站") "the report makes no whole-site claim"
+
+    # Every finding carries the four pieces or says what is missing.
+    $graded = 0
+    foreach ($f in @($r.Body.findings)) {
+        Assert ($null -ne $f.evidence_block) "finding $($f.id) carries an evidence block"
+        Assert ($null -ne $f.PSObject.Properties['min_impact']) "finding $($f.id) carries min_impact"
+        Assert ($null -ne $f.PSObject.Properties['stop_condition']) "finding $($f.id) carries stop_condition"
+        Assert ($null -ne $f.PSObject.Properties['counter']) "finding $($f.id) carries counter"
+        if ($f.evidence_block.complete) { $graded++ }
+    }
+    Assert ($graded -gt 0) "at least one finding resolved its request_id against the audit log"
+
+    # Same ledger, same bytes: snapshots are checkable by hash.
+    $md1 = (& curl.exe -s -H "X-Youkai-Token: $token" "$apiBase/api/engagements/$engId/report?format=md" | Out-String)
+    $md2 = (& curl.exe -s -H "X-Youkai-Token: $token" "$apiBase/api/engagements/$engId/report?format=md" | Out-String)
+    Assert ($md1 -eq $md2) "two renders of an unchanged ledger are byte-identical"
+    Assert ($md1 -match "① 证据" -and $md1 -match "④ 反证说明") "markdown carries the four evidence sections"
+
+    # Snapshot: immutable, hashed, freeze-the-passport.
+    $snap1 = Api "POST" "/api/engagements/$engId/reports" $null
+    Assert ($snap1.Code -eq 201) "snapshot created"
+    Assert ($snap1.Body.sha256.Length -eq 64) "snapshot carries a sha256 anchor"
+    $snap1Id = $snap1.Body.snapshot.id
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc `
+        "UPDATE report_snapshots SET content_sha256='tampered' WHERE id=$snap1Id;" 2>&1 | Out-String
+    Assert ($out -match "append-only") "the snapshot table refuses UPDATE at the database level"
+
+    # SARIF exports the same ledger for CI.
+    $sarif = (& curl.exe -s -H "X-Youkai-Token: $token" "$apiBase/api/engagements/$engId/sarif" | Out-String)
+    Assert ($sarif -match '"version": "2.1.0"') "SARIF export declares version 2.1.0"
+    Assert ($sarif -match '"ruleId": "youkai/') "SARIF results carry youkai rule ids"
+    Assert ($sarif -match '"min_impact"') "the four evidence pieces survive the SARIF export"
+
+    # Disclosure: only verified findings, and only with an authorisation basis.
+    $disc = (& curl.exe -s -o NUL -w "%{http_code}" -H "X-Youkai-Token: $token" "$apiBase/api/engagements/$engId/disclosure")
+    Assert (($disc -as [string]).Trim() -eq "409") "disclosure refuses to ship with no verified finding"
+
+    $graphNow = Api "GET" "/api/engagements/$engId/graph" $null
+    $cand = @($graphNow.Body.findings | Where-Object { $_.state -eq "candidate" } | Select-Object -First 1)
+    if ($cand.Count -gt 0) {
+        $r = Api "POST" "/api/engagements/$engId/findings/$($cand[0].id)/verdict" @{
+            operator = "acceptance"; note = "复现确认"; confirm = $true
+        }
+        Assert ($r.Code -eq 200) "operator verdict recorded (candidate -> verified)"
+    }
+    $disc = (& curl.exe -s -H "X-Youkai-Token: $token" "$apiBase/api/engagements/$engId/disclosure" | Out-String)
+    Assert ($disc -match "授权声明") "disclosure states the authorisation"
+    Assert ($disc -match "估计") "disclosure labels CVSS as an estimate"
+
+    # Widen the passport, snapshot again: the frozen scope must differ.
+    $scopeNow = (Api "GET" "/api/engagements/$engId" $null).Body.scope
+    $scopeNow | Add-Member -NotePropertyName allow_object_seeding -NotePropertyValue $true -Force
+    $scopeNow | Add-Member -NotePropertyName max_requests -NotePropertyValue 321 -Force
+    $r = Api "PUT" "/api/engagements/$engId/scope" @{ scope = $scopeNow; updated_by = "acceptance" }
+    Assert ($r.Code -eq 200) "passport widened before the second snapshot"
+    $snap2 = Api "POST" "/api/engagements/$engId/reports" $null
+    Assert ($snap2.Code -eq 201) "second snapshot created"
+    Assert ($snap2.Body.sha256 -ne $snap1.Body.sha256) "the second snapshot hashes differently after a scope change"
+
+    # ---- 13. database-level invariants -------------------------------------
     Write-Host "`n== database guards ==" -ForegroundColor Cyan
     $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE audit_log SET status=999;" 2>&1 | Out-String
     Assert ($out -match "append-only") "audit_log refuses UPDATE at the database level"

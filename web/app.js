@@ -446,38 +446,114 @@ function approveControls(it) {
   return el("div", { class: "actions" }, operator, basis, highAuth, approveBtn, execBtn, status);
 }
 
-/* ---- evidence ------------------------------------------------------------ */
+/* ---- evidence: the report, snapshots, SARIF, disclosure ------------------- */
 
-function renderEvidence(host) {
-  const findings = (state.graph && state.graph.findings) || [];
-  const actions = el("div", { class: "actions" },
-    el("button", { class: "ghost", onclick: () => downloadReport("md") }, "下载 markdown 报告"),
-    el("button", { class: "ghost", onclick: () => downloadReport("json") }, "下载 JSON"));
-  host.appendChild(actions);
-
-  host.appendChild(el("div", { class: "sec" }, `发现 (${findings.length})`));
-  if (!findings.length) {
-    host.appendChild(el("div", { class: "empty" }, "还没有发现。只读取证跑完后会出现在这里。"));
+async function renderEvidence(host) {
+  let b;
+  try {
+    b = await api(`/api/engagements/${state.current.id}/report`);
+  } catch (e) {
+    host.appendChild(el("div", { class: "empty" }, "读取报告失败:" + e.message));
     return;
   }
+  const findings = b.findings || [];
+  const cov = b.coverage || {};
+
+  const actions = el("div", { class: "actions" },
+    el("button", { class: "primary", onclick: () => snapshotReport() }, "出快照报告"),
+    el("button", { class: "ghost", onclick: () => openWithToken("sarif") }, "导出 SARIF"),
+    el("button", { class: "ghost", onclick: () => openWithToken("disclosure", "md") }, "披露包 (md)"),
+    el("button", { class: "ghost", onclick: () => openWithToken("disclosure", "html") }, "披露包 (html)"),
+    el("button", { class: "ghost", onclick: () => downloadReport("md") }, "下载 markdown"),
+    el("button", { class: "ghost", onclick: () => downloadReport("html") }, "下载 HTML"));
+  host.appendChild(actions);
+
+  host.appendChild(el("div", { class: "card" },
+    el("h3", {}, "覆盖声明"),
+    el("p", {}, cov.statement || "—"),
+    el("p", { class: "hint" },
+      "覆盖数字来自审计表(实际发出的请求),不是来自护照(允许去的地方)。未列出的资产不在报告范围内。")));
+
+  if ((b.incomplete || []).length) {
+    host.appendChild(el("div", { class: "card warn" },
+      el("h3", {}, "证据不完整"),
+      el("p", { class: "hint" }, "以下发现缺四样证据中至少一样,已排除在披露包之外:"),
+      el("ul", {}, ...b.incomplete.map((s) => el("li", { class: "mono" }, s)))));
+  }
+
+  host.appendChild(el("div", { class: "sec" }, `发现 (${findings.length},已确认 ${b.stats ? b.stats.verified : 0})`));
+  if (!findings.length) {
+    host.appendChild(el("div", { class: "empty" }, "还没有发现。只读取证跑完后会出现在这里。"));
+  }
   for (const f of findings) {
-    const ev = f.evidence || {};
+    const ev = f.evidence_block || {};
+    const four = el("ul", { class: "four" });
+    const evLines = el("ul", {});
+    if (!(ev.request_ids || []).length) {
+      evLines.appendChild(el("li", {}, "缺失:没有任何 request_id"));
+    }
+    for (const id of (ev.request_ids || [])) {
+      const row = (ev.audit || []).find((a) => a.request_id === id);
+      evLines.appendChild(el("li", { class: "mono" },
+        id + (row ? ` — ${row.method} ${short(row.url, 90)} → ${row.status} [${row.verdict}]` : " — 审计表里找不到")));
+    }
+    four.appendChild(el("li", {}, el("b", {}, "① 证据"), evLines));
+    four.appendChild(el("li", {}, el("b", {}, "② 最小影响"), ":", f.min_impact || "—"));
+    four.appendChild(el("li", {}, el("b", {}, "③ 停止点"), ":", f.stop_condition || "—"));
+    four.appendChild(el("li", {}, el("b", {}, "④ 反证说明"), ":", f.counter || "—"));
+
     host.appendChild(el("div", { class: "card" },
       el("h3", {},
         el("span", { class: "tag" }, f.severity),
         f.title,
-        el("span", { class: "state " + f.state }, f.state)),
-      el("dl", { class: "kv" },
-        el("dt", {}, "位置"), el("dd", { class: "mono" }, short(f.where, 300)),
-        el("dt", {}, "证据"), el("dd", { class: "mono" }, ev.request_id ? "request_id=" + ev.request_id : "—"),
-        el("dt", {}, "限制/反证"), el("dd", {}, short(f.detail, 400) || "—"),
-        f.operator ? el("dt", {}, "操作员判定") : null,
-        f.operator ? el("dd", {}, `${f.operator} · ${f.verdict_note || ""}`) : null),
+        el("span", { class: "state " + f.state }, f.state),
+        f.disclosable ? el("span", { class: "tag ok" }, "可披露") : null),
+      el("p", { class: "mono" }, "位置:" + short(f.where, 300)),
+      four,
+      f.detail ? el("p", { class: "muted" }, f.detail) : null,
+      (f.incomplete || []).length
+        ? el("p", { class: "warn" }, "证据不完整:缺 " + f.incomplete.join("、"))
+        : null,
       f.state === "candidate"
-        ? el("div", { class: "actions" },
-            el("button", { class: "ghost", onclick: () => verdictModal(f) }, "确认 verified…"))
+        ? el("div", { class: "actions" }, el("button", { class: "ghost", onclick: () => verdictModal(f) }, "确认 verified…"))
         : el("p", { class: "hint" }, "已由操作员确认。")));
   }
+
+  host.appendChild(el("div", { class: "sec" }, "历史快照"));
+  const listHost = el("div", {});
+  host.appendChild(listHost);
+  await renderSnapshots(listHost);
+}
+
+async function renderSnapshots(host) {
+  let snaps = [];
+  try { snaps = await api(`/api/engagements/${state.current.id}/reports`); } catch (e) { snaps = []; }
+  if (!snaps.length) {
+    host.appendChild(el("div", { class: "empty" }, "还没有快照。点「出快照报告」把当前投影固化下来(append-only,带 sha256)。"));
+    return;
+  }
+  host.appendChild(simpleTable(["#", "时间", "sha256(前 8)", "读回"],
+    snaps.map((s) => [String(s.id), new Date(s.created_at).toLocaleString(), s.content_sha256.slice(0, 8),
+      "下载"])));
+  host.appendChild(el("p", { class: "hint" },
+    "快照表在数据库层是 append-only:UPDATE / DELETE 会被触发器拒绝。披露与复核都以快照哈希为锚。"));
+}
+
+async function snapshotReport() {
+  banner("");
+  try {
+    const r = await api(`/api/engagements/${state.current.id}/reports`, { method: "POST" });
+    banner(`已出快照 #${r.snapshot.id} · sha256=${(r.sha256 || "").slice(0, 8)}…` +
+      (r.artifact ? " · HTML: " + r.artifact : ""), "ok");
+    await refresh();
+  } catch (e) { banner("出快照失败:" + e.message); }
+}
+
+// openWithToken opens a report sub-resource with the token in the fragment-free
+// query (the API accepts ?token= for downloads).
+function openWithToken(kind, format) {
+  const q = format ? `?format=${format}&token=` : "?token=";
+  window.open(`/api/engagements/${state.current.id}/${kind}${q}${encodeURIComponent(state.token)}`, "_blank");
 }
 
 async function verdictModal(f) {
@@ -511,7 +587,6 @@ function downloadReport(format) {
   const url = `/api/engagements/${state.current.id}/report?format=${format}&token=${encodeURIComponent(state.token)}`;
   window.open(url, "_blank");
 }
-
 /* ---- runs ---------------------------------------------------------------- */
 
 function renderRuns(host) {

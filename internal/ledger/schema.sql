@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS findings (
 -- Findings are idempotent per (engagement, title+kind+where) so re-running a
 -- scan does not duplicate the same candidate.
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+-- The counter-argument: why this could be a false positive and what would be
+-- needed to grade it. Empty means "nobody stated one", which the report treats as
+-- missing evidence rather than filling in silence.
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS counter TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX IF NOT EXISTS findings_dedupe_idx ON findings (engagement_id, dedupe_key);
 
 CREATE TABLE IF NOT EXISTS intents (
@@ -227,3 +231,30 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by TEXT NOT NULL DEFAULT ''
 );
+
+-- Immutable report snapshots (DEVPLAN-v0.5). A report is a projection of the
+-- ledger, and this table pins one projection: the exact bytes (via sha256), the
+-- passport in force when it was produced, and the bundle itself. Append-only, like
+-- the audit log: a snapshot you can edit proves nothing.
+CREATE TABLE IF NOT EXISTS report_snapshots (
+  id             BIGSERIAL PRIMARY KEY,
+  engagement_id  BIGINT NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  content_sha256 TEXT NOT NULL,
+  scope_snapshot JSONB NOT NULL,
+  bundle         JSONB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS report_snapshots_eng_idx
+  ON report_snapshots (engagement_id, created_at DESC);
+
+CREATE OR REPLACE FUNCTION report_snapshots_append_only() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'report_snapshots is append-only: % is not allowed', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS report_snapshots_no_update ON report_snapshots;
+CREATE TRIGGER report_snapshots_no_update
+  BEFORE UPDATE OR DELETE ON report_snapshots
+  FOR EACH ROW EXECUTE FUNCTION report_snapshots_append_only();

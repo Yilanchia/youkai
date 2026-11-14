@@ -261,6 +261,33 @@ Fetch 门管辖的 CDP 会话 —— 那就是未受闸出口。"无未闸请求
 当前限制:浏览器**暂不注入已存会话**(`session` 还没接到 CDP `Network.setCookie`),所以只做匿名渲染 + 闸门;
 登录态多身份浏览器是下一步。无 Chrome/Edge → `ErrUnavailable` + 明确原因,不伪造。
 
+## 证据与披露(Proof-Carrying Pentest)
+
+报告不是"扫到了什么"的回显,而是**第三方照着就能复核**的成品。`internal/report` 是纯函数
+(账本数据进、文本出,不发任何请求 —— 有静态检查焊死),所以同一账本两次渲染**字节一致**。
+
+**每条发现必须带齐四样**,缺一样就标 `incomplete:<what>` 并排除在披露之外,不静默补全:
+
+| # | 四样 | 账本落点 |
+|---|---|---|
+| ① | 证据 | `evidence.request_id[]` + 反查 `audit_log` 坐实"这条请求真的发生过" |
+| ② | 最小影响 | 产生它的能力(从审计 `purpose` 反推)+ `wording` 模板 |
+| ③ | 停止点 | 同上 |
+| ④ | 反证说明 | `findings.counter`,缺则按 kind 给模板;未知 kind 保持缺失 |
+
+**产物**:
+
+- `GET /api/engagements/{id}/report?format=json|md|html` — 报告(含覆盖声明)。
+- `POST /api/engagements/{id}/reports` — 落一份**不可变快照**:`content_sha256` + 当时的护照 +
+  完整 bundle,并写一份自包含 HTML 到产物目录。表是 append-only(`UPDATE`/`DELETE` 被触发器拒绝)。
+- `GET /api/engagements/{id}/reports[/{sid}]` — 列出 / 读回快照(按哈希复核)。
+- `GET /api/engagements/{id}/sarif` — SARIF 2.1.0(verified→error,candidate→warning,四样进 `properties`)。
+- `GET /api/engagements/{id}/disclosure?format=md|html` — **只收 verified**;无 verified 返回 409 并说明;
+  无 `basis`/`include` 返回 412;CVSS 标注"估计";正文无凭据、无响应正文。
+
+**覆盖声明**来自审计表(实际发出的请求),不是护照(允许去的地方):测过几个主机、几个端点、
+多少次请求、允许/阻断/失败各多少 —— 并明确写"未在此列出的资产不在本报告范围内"。
+
 ## 测试与验收
 
 ```bash
@@ -274,7 +301,7 @@ go test ./...       # 全绿(默认并行;migrate 用会话 advisory lock 串行
 
 `scripts/acceptance-v02.ps1` 把这些连同一轮真机只读链、档 2 双条件(含 high-auth 缺失返 428)、
 账号层 provision/seed、浏览器越界拦断、报告生成,全部做成可重放断言(独立数据库、独立 workspace,不污染真实账本)。
-逐模块证据见 [docs/IMPL-STATUS-v0.3.md](docs/IMPL-STATUS-v0.3.md)。
+逐模块证据见 [docs/IMPL-STATUS-v0.5.md](docs/IMPL-STATUS-v0.5.md)(v0.3 账号层/浏览器、v0.4 配置面、v0.5 证据闭环)。
 
 ## 设计取舍与未做
 

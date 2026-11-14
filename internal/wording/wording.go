@@ -15,6 +15,7 @@ import (
 
 // Describe renders the literal request or text the hand would send.
 func Describe(action string, args map[string]any) string {
+	action = canonical(action)
 	switch action {
 	case "web_probe":
 		method := strings.ToUpper(str(args, "method"))
@@ -55,6 +56,7 @@ func Describe(action string, args map[string]any) string {
 
 // MinImpact is the smallest effect that still counts as proof.
 func MinImpact(action string) string {
+	action = canonical(action)
 	switch action {
 	case "web_probe":
 		return "one read-only HTTP request; no state changed"
@@ -72,12 +74,27 @@ func MinImpact(action string) string {
 		return "local static analysis; the sample is never executed and no network is used"
 	case "pwn_template", "pwn_gdbscript", "web_poc", "impact_proof", "frida_script":
 		return "text output only; the operator decides whether to run it, and youkai does not"
+	case "fingerprint":
+		return "a handful of read-only GETs to recognise the stack; no state changed"
+	case "headers", "cors", "exposures", "redirect_check", "proof":
+		return "one read-only GET per check; nothing is modified and no payload is sent"
+	case "scan":
+		return "one read-only scan pass over a fixed check list; no payloads, no state change"
+	case "crawl":
+		return "bounded read-only GET crawl (page count is capped); no forms are submitted"
+	case "browser":
+		return "one headless render; every in-page request is checked against the passport before it leaves"
+	case "accounts_show":
+		return "read-only: renders identities and declared ownership; no request leaves the machine"
+	case "reachability":
+		return "one read-only GET per identity against the given URL; nothing is modified"
 	}
 	return "unknown: treat as at least proof-grade impact"
 }
 
 // StopCondition says when to stop, decided before the action runs.
 func StopCondition(action string) string {
+	action = canonical(action)
 	switch action {
 	case "web_probe":
 		return "stop when the status/body answer the question; do not re-probe the same URL"
@@ -95,6 +112,20 @@ func StopCondition(action string) string {
 		return "stop after the report; findings stay candidates until an operator verdict"
 	case "pwn_template", "pwn_gdbscript", "web_poc", "impact_proof", "frida_script":
 		return "stop at text generation; any execution is a separate human decision outside youkai"
+	case "fingerprint":
+		return "stop once the stack is identified; do not probe further"
+	case "headers", "cors", "exposures", "redirect_check", "proof":
+		return "stop after the single check; re-running the same URL adds nothing"
+	case "scan":
+		return "stop at the end of one pass; do not loop, do not re-scan the same host"
+	case "crawl":
+		return "stop at the page cap; do not follow the same link twice"
+	case "browser":
+		return "stop after the page settles; do not navigate further without a new intent"
+	case "accounts_show":
+		return "stop after rendering the view"
+	case "reachability":
+		return "stop after the matrix pass; do not enumerate further"
 	}
 	return "stop at first observable effect"
 }
@@ -126,4 +157,31 @@ func firstURL(args map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// canonical maps the capability names introduced by the monolith (v0.2+) onto the
+// wording cases above, so an approval prompt and a report never disagree about the
+// same action.
+func canonical(action string) string {
+	switch strings.TrimSpace(action) {
+	case "probe":
+		return "web_probe"
+	case "param", "param_adaptive":
+		return "web_param"
+	case "waf":
+		return "web_waf"
+	case "login":
+		return "web_login"
+	case "compare":
+		return "web_compare"
+	case "role_matrix":
+		return "web_role_matrix"
+	case "reachability":
+		return "web_compare"
+	case "download", "collect":
+		return "fairy_handoff"
+	case "analyze", "analyze_target":
+		return "analyze_target"
+	}
+	return action
 }

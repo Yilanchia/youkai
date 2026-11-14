@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -415,106 +414,6 @@ func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request, eng ledg
 		}
 		writeJSON(w, http.StatusOK, f)
 	}
-}
-
-// ---- report ----------------------------------------------------------------
-
-// ReportBundle is the evidence report: the ledger is the source of truth, so the
-// report is a projection of it, always reproducible.
-type ReportBundle struct {
-	Engagement  string            `json:"engagement"`
-	GeneratedAt string            `json:"generated_at"`
-	Scope       json.RawMessage   `json:"scope"`
-	Stats       ledger.GraphStats `json:"stats"`
-	Findings    []ledger.Finding  `json:"findings"`
-	Facts       []ledger.Fact     `json:"facts"`
-	Intents     []ledger.Intent   `json:"intents"`
-	Audit       []ledger.AuditRow `json:"audit"`
-	Provider    string            `json:"exploit_provider"`
-}
-
-func (s *Server) handleReport(w http.ResponseWriter, r *http.Request, eng ledger.Engagement) {
-	g, err := s.cfg.Store.Graph(r.Context(), eng.ID)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "%v", err)
-		return
-	}
-	audit, _ := s.cfg.Store.AuditTail(r.Context(), eng.Name, 500)
-	bundle := ReportBundle{
-		Engagement:  eng.Name,
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Scope:       eng.Scope,
-		Stats:       g.Stats,
-		Findings:    g.Findings,
-		Facts:       g.Facts,
-		Intents:     g.Intents,
-		Audit:       audit,
-		Provider:    gate.Provider().Reason(),
-	}
-	if r.URL.Query().Get("format") == "md" {
-		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(renderMarkdown(bundle)))
-		return
-	}
-	writeJSON(w, http.StatusOK, bundle)
-}
-
-// renderMarkdown produces the human report. Every finding carries the four
-// evidence fields; none of them is optional.
-func renderMarkdown(b ReportBundle) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "# youkai 证据报告 — %s\n\n生成时间:%s\n\n", b.Engagement, b.GeneratedAt)
-	fmt.Fprintf(&sb, "- 资产 %d / 事实 %d / 发现 %d(已确认 %d)\n", b.Stats.Assets, b.Stats.Facts, b.Stats.Findings, b.Stats.Verified)
-	fmt.Fprintf(&sb, "- 请求:允许 %d / 阻断 %d / 失败 %d\n", b.Stats.AuditAllowed, b.Stats.AuditBlocked, b.Stats.AuditError)
-	fmt.Fprintf(&sb, "- 利用提供者:%s\n\n", b.Provider)
-
-	sb.WriteString("## 发现\n\n")
-	if len(b.Findings) == 0 {
-		sb.WriteString("(无)\n\n")
-	}
-	for _, f := range b.Findings {
-		reqID, _ := f.Evidence["request_id"].(string)
-		fmt.Fprintf(&sb, "### [%s] %s\n\n", f.Severity, f.Title)
-		fmt.Fprintf(&sb, "- 状态:**%s**\n", f.State)
-		fmt.Fprintf(&sb, "- 位置:`%s`\n", f.Where)
-		fmt.Fprintf(&sb, "- 证据:%s\n", emptyDash("request_id="+reqID))
-		fmt.Fprintf(&sb, "- 反证/限制:%s\n", emptyDash(f.Detail))
-		if f.Operator != "" {
-			fmt.Fprintf(&sb, "- 操作员判定:%s(%s)\n", f.Operator, f.VerdictNote)
-		}
-		sb.WriteString("\n")
-	}
-
-	sb.WriteString("## 事实\n\n")
-	for _, f := range b.Facts {
-		reqID, _ := f.Evidence["request_id"].(string)
-		fmt.Fprintf(&sb, "- [%s] %s%s\n", strings.Join(f.Tags, ","), f.Statement, ifSet(" (request_id="+reqID+")"))
-	}
-	sb.WriteString("\n## 意图与审批\n\n")
-	for _, it := range b.Intents {
-		fmt.Fprintf(&sb, "- #%d `%s` tier=%d status=%s approved=%v\n", it.ID, it.Capability, it.Tier, it.Status, it.Approved)
-	}
-	sb.WriteString("\n## 审计(最近)\n\n")
-	for _, a := range b.Audit {
-		fmt.Fprintf(&sb, "- %s %s %s → %d [%s] %s\n", a.TS.Format(time.RFC3339), a.Method, a.URL, a.Status, a.Verdict, a.Reason)
-	}
-	sb.WriteString("\n---\n本报告由账本投影生成,不含响应正文与凭据。\n")
-	return sb.String()
-}
-
-func emptyDash(s string) string {
-	if strings.TrimSpace(strings.TrimPrefix(s, "request_id=")) == "" {
-		return "—"
-	}
-	return s
-}
-
-func ifSet(s string) string {
-	if strings.TrimPrefix(strings.TrimSuffix(s, ")"), " (request_id=") == "" {
-		return ""
-	}
-	return s
 }
 
 // networkCapabilities are the tier-2 capabilities that put bytes on the wire even

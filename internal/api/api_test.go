@@ -61,8 +61,10 @@ func newFixture(t *testing.T, highAuthKey string) *fixture {
 	}
 	t.Cleanup(store.Close)
 	// One global settings row backs "the LLM configuration", so each test starts
-	// from an empty one instead of inheriting the previous test's values.
-	if _, err := store.Pool().Exec(ctx, `DELETE FROM settings`); err != nil {
+	// from an empty one instead of inheriting the previous test's values. Scoped to
+	// that key on purpose: other packages' tests may hold settings rows of their own
+	// while this package runs in parallel.
+	if _, err := store.Pool().Exec(ctx, `DELETE FROM settings WHERE key = $1`, config.KeyLLM); err != nil {
 		t.Fatalf("clear settings: %v", err)
 	}
 	if err := store.Migrate(ctx); err != nil {

@@ -87,20 +87,24 @@ type Fact struct {
 
 // Finding is a candidate vulnerability. It starts as a candidate, always.
 type Finding struct {
-	ID           int64          `json:"id"`
-	EngagementID int64          `json:"engagement_id"`
-	Title        string         `json:"title"`
-	Severity     string         `json:"severity"`
-	Kind         string         `json:"kind"`
-	Where        string         `json:"where"`
-	Detail       string         `json:"detail"`
-	State        string         `json:"state"`
-	Evidence     map[string]any `json:"evidence"`
-	Tags         []string       `json:"tags"`
-	Operator     string         `json:"operator,omitempty"`
-	VerdictNote  string         `json:"verdict_note,omitempty"`
-	VerifiedAt   *time.Time     `json:"verified_at,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
+	ID           int64  `json:"id"`
+	EngagementID int64  `json:"engagement_id"`
+	Title        string `json:"title"`
+	Severity     string `json:"severity"`
+	Kind         string `json:"kind"`
+	Where        string `json:"where"`
+	Detail       string `json:"detail"`
+	// Counter is why this finding could be a false positive and what would be
+	// needed to grade it. Optional in the ledger; the report marks it missing
+	// rather than inventing one.
+	Counter     string         `json:"counter,omitempty"`
+	State       string         `json:"state"`
+	Evidence    map[string]any `json:"evidence"`
+	Tags        []string       `json:"tags"`
+	Operator    string         `json:"operator,omitempty"`
+	VerdictNote string         `json:"verdict_note,omitempty"`
+	VerifiedAt  *time.Time     `json:"verified_at,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
 }
 
 // Intent is one typed next step. Approval is a human act recorded elsewhere.
@@ -207,11 +211,13 @@ type FactSeed struct {
 // FindingSeed is a finding before it has an id. There is no State field on
 // purpose: everything a capability produces is a candidate.
 type FindingSeed struct {
-	Title    string         `json:"title"`
-	Severity string         `json:"severity"`
-	Kind     string         `json:"kind"`
-	Where    string         `json:"where"`
-	Detail   string         `json:"detail"`
+	Title    string `json:"title"`
+	Severity string `json:"severity"`
+	Kind     string `json:"kind"`
+	Where    string `json:"where"`
+	Detail   string `json:"detail"`
+	// Counter is the counter-argument (why it might be wrong, what is missing).
+	Counter  string         `json:"counter,omitempty"`
 	Evidence map[string]any `json:"evidence,omitempty"`
 	Tags     []string       `json:"tags,omitempty"`
 	Anchors  []string       `json:"anchors,omitempty"`

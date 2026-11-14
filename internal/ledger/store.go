@@ -338,11 +338,12 @@ func (s *Store) Ingest(ctx context.Context, engagementID int64, runID *int64, in
 		var id int64
 		fkey := Hash(f.Title, f.Kind, f.Where)
 		err = tx.QueryRow(ctx, `
-			INSERT INTO findings (engagement_id, title, severity, kind, where_, detail, evidence, tags, dedupe_key)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			INSERT INTO findings (engagement_id, title, severity, kind, where_, detail, counter, evidence, tags, dedupe_key)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 			ON CONFLICT (engagement_id, dedupe_key) DO NOTHING
 			RETURNING id`,
-			engagementID, f.Title, NormaliseSeverity(f.Severity), f.Kind, f.Where, f.Detail, ev, nonNilStrings(f.Tags), fkey).Scan(&id)
+			engagementID, f.Title, NormaliseSeverity(f.Severity), f.Kind, f.Where, f.Detail,
+			strings.TrimSpace(f.Counter), ev, nonNilStrings(f.Tags), fkey).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			res.DedupedFindings++
 			continue // same candidate at the same place: already on record
@@ -732,7 +733,7 @@ func (s *Store) Finding(ctx context.Context, engagementID, id int64) (Finding, e
 	return list[0], nil
 }
 
-const findingSelect = `SELECT id, engagement_id, title, severity, kind, where_, detail, state,
+const findingSelect = `SELECT id, engagement_id, title, severity, kind, where_, detail, counter, state,
 	evidence, tags, coalesce(operator,''), coalesce(verdict_note,''), verified_at, created_at FROM findings`
 
 // ListFindings returns findings, newest first.
@@ -754,7 +755,7 @@ func scanFindings(rows pgx.Rows) ([]Finding, error) {
 		var f Finding
 		var ev []byte
 		if err := rows.Scan(&f.ID, &f.EngagementID, &f.Title, &f.Severity, &f.Kind, &f.Where,
-			&f.Detail, &f.State, &ev, &f.Tags, &f.Operator, &f.VerdictNote, &f.VerifiedAt, &f.CreatedAt); err != nil {
+			&f.Detail, &f.Counter, &f.State, &ev, &f.Tags, &f.Operator, &f.VerdictNote, &f.VerifiedAt, &f.CreatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(ev, &f.Evidence)

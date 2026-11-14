@@ -373,6 +373,12 @@ func (s *Server) handleEngagementScoped(w http.ResponseWriter, r *http.Request) 
 		s.handleFindings(w, r, eng, tail[1:])
 	case len(tail) >= 1 && tail[0] == "report":
 		s.handleReport(w, r, eng)
+	case len(tail) >= 1 && tail[0] == "reports":
+		s.handleSnapshots(w, r, eng, tail[1:])
+	case len(tail) >= 1 && tail[0] == "sarif":
+		s.handleSARIF(w, r, eng)
+	case len(tail) >= 1 && tail[0] == "disclosure":
+		s.handleDisclosure(w, r, eng)
 	case len(tail) >= 1 && tail[0] == "scope":
 		s.handleScope(w, r, eng)
 	case len(tail) >= 1 && tail[0] == "accounts":

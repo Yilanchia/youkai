@@ -141,3 +141,42 @@ func repoRoot(t *testing.T) string {
 		dir = parent
 	}
 }
+
+// TestReportPackageCannotReachTheNetwork pins the promise the report package makes
+// in its doc comment: it is a pure projection. If it could import the guard or the
+// web package, "reading the ledger" would quietly become "asking the target again",
+// and a snapshot would stop being reproducible.
+func TestReportPackageCannotReachTheNetwork(t *testing.T) {
+	root := repoRoot(t)
+	dir := filepath.Join(root, "internal", "report")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read report dir: %v", err)
+	}
+	banned := []string{
+		"youkai/internal/gate",
+		"youkai/internal/discipline",
+		"youkai/internal/web",
+		"youkai/internal/binary",
+		"youkai/internal/accounts",
+		"youkai/internal/runtime",
+		"net/http",
+		"net",
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		text := string(src)
+		for _, pkg := range banned {
+			if strings.Contains(text, `"`+pkg+`"`) {
+				t.Errorf("internal/report/%s imports %q; the report must stay a pure ledger projection",
+					entry.Name(), pkg)
+			}
+		}
+	}
+}

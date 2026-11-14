@@ -39,6 +39,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acceptance-v02.ps1
   配置变更落 `config:llm` 审计。
 - **护照编辑**:全字段建作业 → 字段都落库 → 通配符被拒 → 放宽护照落 `config:scope` 审计。
 
+- **证据报告**:四样齐备(缺则标 incomplete)、两次渲染字节一致、快照带 sha256 且拒 UPDATE、
+  SARIF 2.1.0(四样进 properties)、披露包无 verified 时 409、改护照后再出快照哈希不同。
+
 本地靶场 `lab-target.py` 为此增加了 `/login`、`/orders/1`(正确受限)、
 `/orders/2`(故意 IDOR)、`/spa`(含越界 beacon)、`/api/data`、`/signup`(CAPTCHA)、
 `/chat/completions`(假的 OpenAI 兼容端点,给「测试连接」用)。
