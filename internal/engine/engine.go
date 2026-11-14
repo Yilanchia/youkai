@@ -514,7 +514,13 @@ func (e *Engine) fail(ctx context.Context, it ledger.Intent, rec StepRecord, msg
 	rec.OK = false
 	rec.Err = msg
 	rec.Trace = msg
-	_ = e.cfg.Store.AppendTrace(ctx, e.cfg.EngagementID, it.ID, msg+" (no retry; intent left active)")
+	// A failed step must not stay "active": nothing is running it any more, the
+	// workbench does not show it, and the fingerprint dedupe stops it from being
+	// re-derived - one transient failure would wedge the chain for good. "blocked"
+	// keeps it visible and out of the claim path until a human looks.
+	_ = e.cfg.Store.SetIntentStatus(ctx, e.cfg.EngagementID, it.ID, ledger.StatusBlocked)
+	_ = e.cfg.Store.AppendTrace(ctx, e.cfg.EngagementID, it.ID,
+		msg+" (no retry; marked blocked, not re-derived)")
 	return rec
 }
 

@@ -1,0 +1,78 @@
+name: ci
+
+# The regression net. Everything here ran before anyone looks at a diff.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build / vet / test (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.22.x", "stable"]
+    services:
+      # A throwaway PostgreSQL. It exists so the ledger tests (triggers, snapshots,
+      # dedupe, approvals) actually run in CI; the operator's own data directory
+      # (.pgsql/) is never touched.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: youkai
+          POSTGRES_PASSWORD: youkai_dev_pw
+          POSTGRES_DB: youkai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U youkai -d youkai_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+    env:
+      YOUKAI_TEST_DSN: postgres://youkai:youkai_dev_pw@127.0.0.1:5432/youkai_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: build
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: test
+        # No -short: the browser tests run when a Chromium is present and skip
+        # cleanly when it is not. The browser and its gate are part of what we ship.
+        run: go test ./... -count=1 -timeout 10m
+
+      - name: ensure the binary starts and refuses to run without a database
+        run: |
+          go build -o /tmp/youkaid ./cmd/youkaid
+          if /tmp/youkaid -dsn "" -token x >/tmp/out 2>&1; then
+            echo "::error::youkaid started without a database"
+            cat /tmp/out
+            exit 1
+          fi

@@ -1,0 +1,34 @@
+youkai
+Copyright (c) 2026 youkai authors
+SPDX-License-Identifier: MIT
+
+This product includes software and capabilities ported from:
+
+  Fairy (MIT)
+  Copyright (c) 2025-2026 Fairy authors (same authors as youkai)
+  Origin of: the scope passport, the per-request guard, rate limiting, data
+  minimisation, per-request auditing, the high-authorisation gate, the account
+  layer semantics, and the CDP browser gating model.
+
+  Verdex (MIT)
+  Copyright (c) 2025-2026 Verdex authors (same authors as youkai)
+  Origin of: the binary capability surface (static analysis, disassembly,
+  decompilation, text-generation-only exploit scaffolding), the SARIF export
+  shape, and the SECURITY.md reporting model.
+
+Both are MIT-licensed; their copyright notices are retained here as required by
+the MIT terms. The corresponding source is available from the same authors.
+
+Architectural ideas (NOT code) were taken from:
+
+  ARTEX (RuoJi6/ARTEX) - AGPL-3.0
+  norma - AGPL-3.0
+
+Concepts only: "process-level information exchange" between worker rounds and
+the shape of the cross-round trace retrieval in youkai (v0.7). No source code,
+no files, and no derived works from ARTEX or norma are included in this
+repository. If you believe otherwise, open an issue and it will be removed or
+relicensed before the next release.
+
+Third-party Go modules are used under their own licenses; see go.mod/go.sum and
+`go-licenses report ./...` for the authoritative transitive list.

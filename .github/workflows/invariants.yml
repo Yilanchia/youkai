@@ -1,0 +1,137 @@
+name: invariants
+
+# The point of youkai is that its safety properties are structural, not promises.
+# This workflow is deliberately a separate, always-required job with one step per
+# invariant: when something breaks, the check name says which promise died.
+#
+# If a step here fails, the fix is to restore the invariant - not to relax the
+# check. Exemptions are visible in the code they live in (with a reason).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: invariants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  one-egress-path:
+    name: "invariant: one egress path (the guard)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: no http client / raw socket outside internal/discipline
+        run: go test ./internal/discipline -run 'TestNoEgressOutsideTheGuard' -count=1 -v
+
+  report-is-projection:
+    name: "invariant: the report cannot reach the target"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: internal/report has no networking imports
+        run: go test ./internal/discipline -run 'TestReportPackageCannotReachTheNetwork' -count=1 -v
+
+  tier-three-wall:
+    name: "invariant: tier 3 is not in this build"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: the wall only exists where it is allowed to exist
+        run: |
+          hits="$(grep -rn "youkai_full" --include="*.go" . || true)"
+          echo "$hits"
+          if [ -n "$hits" ]; then
+            # Exactly one file may mention the tag: the stub that explains the wall.
+            bad="$(echo "$hits" | grep -v '^./internal/gate/exploit_stub.go:' || true)"
+            if [ -n "$bad" ]; then
+              echo "::error::youkai_full mentioned outside the stub:"
+              echo "$bad"
+              exit 1
+            fi
+          fi
+      - name: the OSS build still reports no exploitation provider
+        run: go test ./internal/gate -run 'TestExploitProviderIsStubbed' -count=1 -v
+
+  browser-no-second-exit:
+    name: "invariant: the browser opens no second exit"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no cookie jar / extra-header bypass in the browser path
+        run: |
+          hits="$(grep -rn "Network.setCookie\|setExtraHTTPHeaders\|Storage.setCookies" internal/ --include="*.go" || true)"
+          echo "$hits"
+          if [ -n "$hits" ]; then
+            echo "::error::the browser is setting credentials outside the Fetch gate:"
+            echo "$hits"
+            exit 1
+          fi
+      - name: every in-page request is gated (real Chrome, skipped if absent)
+        run: go test ./internal/web -run 'TestBrowserRendersAndBlocksOutOfScope|TestBrowserSessionInjection' -count=1 -v
+
+  database-guardrails:
+    name: "invariant: database guardrails exist"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: youkai
+          POSTGRES_PASSWORD: youkai_dev_pw
+          POSTGRES_DB: youkai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U youkai -d youkai_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+    env:
+      YOUKAI_TEST_DSN: postgres://youkai:youkai_dev_pw@127.0.0.1:5432/youkai_test?sslmode=disable
+      PGPASSWORD: youkai_dev_pw
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: migrate
+        run: |
+          go build -o /tmp/youkaid ./cmd/youkaid
+          # Starting the server once applies the schema; then we look at the catalog.
+          /tmp/youkaid -addr 127.0.0.1:8799 -token invariants -dsn "$YOUKAI_TEST_DSN" >/tmp/youkaid.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS -H "X-Youkai-Token: invariants" http://127.0.0.1:8799/api/health >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          curl -fsS -H "X-Youkai-Token: invariants" http://127.0.0.1:8799/api/health >/dev/null
+          kill %1 || true
+      - name: every guardrail trigger is installed
+        run: |
+          missing=0
+          for t in audit_log_append_only_trg findings_verdict_guard_trg \
+                   intents_approval_guard_trg report_snapshots_no_update; do
+            n="$(psql -h 127.0.0.1 -U youkai -d youkai_test -tAc \
+                 "SELECT count(*) FROM pg_trigger WHERE tgname = '$t' AND NOT tgisinternal;")"
+            if [ "$n" != "1" ]; then
+              echo "::error::trigger $t is missing (count=$n)"
+              missing=1
+            else
+              echo "ok: $t"
+            fi
+          done
+          exit $missing
+      - name: the triggers actually refuse
+        run: go test ./internal/ledger -run 'TestAuditIsAppendOnly|TestVerifiedRequiresOperatorVerdict|TestApprovalRequiresTheApprovalRow' -count=1 -v

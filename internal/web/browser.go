@@ -515,11 +515,11 @@ func (s *browserSession) enableGating(ctx context.Context, g *discipline.Guard, 
 
 // injection carries the identity the browser renders as.
 //
-// It is deliberately NOT a browser cookie jar: Network.setCookie would let Chrome
-// attach the credential to requests on its own, outside the Fetch gate. Instead the
-// header is added to Fetch.continueRequest, i.e. *after* the guard has authorised
-// that exact request, and only while the request's host matches the identity's own
-// host. One credential, one host, one request at a time.
+// It is deliberately NOT a browser cookie jar: telling Chrome to hold the credential
+// would let it attach the header to requests on its own, outside the Fetch gate.
+// Instead the header travels on Fetch.continueRequest - i.e. *after* the guard has
+// authorised that exact request - and only while the request host matches the
+// identity host. One credential, one host, one request at a time.
 type injection struct {
 	session string
 	headers map[string]string

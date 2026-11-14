@@ -479,9 +479,12 @@ func TestFailureIsNotRetried(t *testing.T) {
 	if n := dispatcher.count("probe"); n != 1 {
 		t.Fatalf("probe was retried: %d calls", n)
 	}
+	// A failed step must end up visible and out of the claim path. Leaving it
+	// "active" used to wedge the chain: nothing runs it, the fingerprint dedupe
+	// stops a re-derive, and the workbench never shows it (found by bench, v0.8).
 	probe := store.intentByCapability("probe")
-	if probe.Status != ledger.StatusActive {
-		t.Fatalf("failed intent status = %q, want active", probe.Status)
+	if probe.Status != ledger.StatusBlocked {
+		t.Fatalf("failed intent status = %q, want blocked", probe.Status)
 	}
 	var sawErr bool
 	for _, s := range rep.Steps {

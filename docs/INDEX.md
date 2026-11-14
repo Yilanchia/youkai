@@ -1,0 +1,52 @@
+# Docs index
+
+按用途分类。**Superseded** 的文档保留作历史记录,不要当作现行规格读。
+
+## 决策(ADR)
+
+| 文档 | 状态 | 一句话 |
+|---|---|---|
+| [ADR-001](ADR-001-architecture-direction.md) | superseded by ADR-004 | 最初的 MCP 手架构 |
+| [ADR-002](ADR-002-youkai-brain-architecture.md) | 部分仍然有效 | 四样证据、档位模型、人批门的原始来源 |
+| [ADR-003](ADR-003-platform-pivot.md) | 现行 | 单操作员、无 RBAC、只听 loopback 的边界 |
+| [ADR-004](ADR-004-monolith-absorb.md) | **现行(架构基线)** | 吸收 Fairy/Verdex 成一个 Go 单体;纪律脊柱是唯一出口 |
+
+## 规格(DEVPLAN)
+
+| 文档 | 状态 |
+|---|---|
+| [DEVPLAN-v0.1](DEVPLAN-v0.1.md) | superseded by v0.2 |
+| [DEVPLAN-v0.2](DEVPLAN-v0.2.md) | 现行(单体化与能力基线) |
+| [DEVPLAN-v0.4](DEVPLAN-v0.4.md) | 已实现 |
+| [DEVPLAN-v0.5](DEVPLAN-v0.5.md) | 已实现 |
+| [DEVPLAN-v0.6](DEVPLAN-v0.6.md) | 已实现 |
+| [DEVPLAN-v0.7](DEVPLAN-v0.7.md) | 已实现 |
+| [DEVPLAN-v0.8](DEVPLAN-v0.8.md) | 已实现 |
+
+## 进度(IMPL-STATUS)
+
+| 文档 | 状态 | 覆盖 |
+|---|---|---|
+| [IMPL-STATUS-v0.1](IMPL-STATUS-v0.1.md) | superseded by v0.2 | v0.1 的 MCP 手原型 |
+| [IMPL-STATUS-v0.2](IMPL-STATUS-v0.2.md) | superseded by v0.3 | 单体化的第一批能力 |
+| [IMPL-STATUS-v0.3](IMPL-STATUS-v0.3.md) | 现行(历史价值) | 账号层、CDP 浏览器闸门 |
+| [IMPL-STATUS-v0.4](IMPL-STATUS-v0.4.md) | 现行 | 配置面(LLM / 护照 / 审计) |
+| [IMPL-STATUS-v0.5](IMPL-STATUS-v0.5.md) | 现行 | 四样证据、快照、SARIF、披露包 |
+| [IMPL-STATUS-v0.6](IMPL-STATUS-v0.6.md) | 现行 | 登录态浏览器(闸内注入) |
+| [IMPL-STATUS-v0.7](IMPL-STATUS-v0.7.md) | 现行 | 过程记忆(trace 检索) |
+| [IMPL-STATUS-v0.8](IMPL-STATUS-v0.8.md) | 现行 | 工程化(CI / 许可 / 基准) |
+
+## 验证
+
+| 文档 | 状态 |
+|---|---|
+| [GAPS-v0.2](GAPS-v0.2.md) | 已闭合(v0.3) |
+| [E2E-VALIDATION-v0.5](E2E-VALIDATION-v0.5.md) | 剧本(可重放) |
+| [E2E-RESULT-v0.5](E2E-RESULT-v0.5.md) | 2026-11-14 真机结果 + 6 个修复 |
+| [bench/README](../bench/README.md) | 本机基准的口径与结果 |
+
+## 读的顺序
+
+新读者:`README` → `ADR-004`(为什么是单体)→ `IMPL-STATUS-v0.8`(现在到哪了)→
+`E2E-RESULT-v0.5`(真机怎么验的)。要动手改代码前读 `CONTRIBUTING.md` 的
+「Adding a capability」一节。

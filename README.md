@@ -17,6 +17,21 @@ PostgreSQL 账本 + 内嵌 SPA。它自己对目标发请求,所以那套"只读
 **不是**:不是自动攻击器。它不自动利用、不横向、不外带、不窃凭据、不做持久化或隐蔽规避。
 "走得远"在这里的定义是**朝可辩护的授权取证走得远**,不是朝利用深度走得远。
 
+## 状态
+
+| 项 | 值 |
+|---|---|
+| 版本 | v0.8(工程化加固;功能基线 v0.7) |
+| 测试 | `go test ./...` —— 全绿(PostgreSQL 由 CI 临时实例提供) |
+| CI | `ci`(build / vet / gofmt / 全量测试,Go 1.22 + stable) |
+| 安全门禁 | `invariants`:唯一出口 / 报告纯投影 / 档 3 墙 / 浏览器无第二出口 / 数据库护栏 |
+| 许可 | MIT,见 [LICENSE](LICENSE);移植来源与 AGPL 思想边界见 [NOTICE](NOTICE) |
+| 漏洞上报 | [SECURITY.md](SECURITY.md)(私密渠道;什么算 youkai 漏洞) |
+| 文档索引 | [docs/INDEX.md](docs/INDEX.md)(含 superseded 标注) |
+
+> "安全靠构造"不是一句声明:它是两个必过的 CI 作业。改坏了哪条不变量,
+> `invariants` 里对应的那一项就会红,名字直接告诉你死的是哪条承诺。
+
 ## 三档能力模型(全局安全骨架)
 
 | 档 | 含义 | 谁能执行 |
@@ -144,7 +159,7 @@ $env:ALICE_PW          = "<测试账号密码;清单里只写 password_env 的�
 | 变量 | 作用 | 默认 |
 |---|---|---|
 | `YOUKAI_DSN` | PostgreSQL 连接串(必填) | — |
-| `YOUKAI_ADDR` | 监听地址(只应为 loopback) | `127.0.0.1:8799` |
+| `YOUKAI_ADDR` | 监听地址(只应为 loopback) | `127.0.0.1:8787`(`start-youkai.cmd` 用 8799) |
 | `YOUKAI_ARTIFACTS` | 产物目录(截图/样本/生成文本) | `.youkai/artifacts` |
 | `YOUKAI_ACCOUNTS` | 身份清单路径 | `.youkai/accounts.json` |
 | `YOUKAI_SESSIONS` | 加密会话目录 | `.youkai/sessions` |
@@ -351,9 +366,11 @@ youkai 本身 **MIT**。它**原生移植** Fairy 与 Verdex 的能力 —— �
 
 ## 延伸阅读(docs/)
 
-- [ADR-004](docs/ADR-004-monolith-absorb.md) 单体化·吸收精华(**最新权威**)· [ADR-003](docs/ADR-003-platform-pivot.md) 平台化 · [ADR-002](docs/ADR-002-youkai-brain-architecture.md) 脑架构 · [ADR-001](docs/ADR-001-architecture-direction.md) 方向总纲
-- [DEVPLAN-v0.2](docs/DEVPLAN-v0.2.md) 单体平台实现规格 · [DEVPLAN-v0.1](docs/DEVPLAN-v0.1.md) 引擎核心
-- [IMPL-STATUS-v0.3](docs/IMPL-STATUS-v0.3.md) 当前落地报告 · [GAPS-v0.2](docs/GAPS-v0.2.md) 缺口清单
+- **文档索引**:[docs/INDEX.md](docs/INDEX.md) —— 按 ADR / DEVPLAN / IMPL-STATUS / 验证分类,标注 superseded
+- **架构**:[ADR-004](docs/ADR-004-monolith-absorb.md) 单体化(权威)· [ADR-003](docs/ADR-003-platform-pivot.md) 平台化 · [ADR-002](docs/ADR-002-youkai-brain-architecture.md) 脑架构
+- **规格与进度**:[DEVPLAN-v0.8](docs/DEVPLAN-v0.8.md) 工程化 · [IMPL-STATUS-v0.8](docs/IMPL-STATUS-v0.8.md) 当前落地报告
+- **验证**:[E2E-RESULT-v0.5](docs/E2E-RESULT-v0.5.md) 真机走查 · [bench/README](bench/README.md) 本机基准口径
+- **参与**:[CONTRIBUTING.md](CONTRIBUTING.md)(新增能力的三条硬要求)· [SECURITY.md](SECURITY.md)(上报渠道与"是/不是漏洞")
 
 ## 红线
 
