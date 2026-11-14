@@ -1,5 +1,9 @@
 # youkai
 
+[![ci](https://github.com/Yilanchia/youkai/actions/workflows/ci.yml/badge.svg)](https://github.com/Yilanchia/youkai/actions/workflows/ci.yml)
+[![invariants](https://github.com/Yilanchia/youkai/actions/workflows/invariants.yml/badge.svg)](https://github.com/Yilanchia/youkai/actions/workflows/invariants.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **一个没有直接打击能力的脑 —— 一个自托管的授权渗透控制台。**
 
 youkai 把 Fairy(web)与 Verdex(binary)的精华**原生吸收**进一个 Go 二进制:常驻 HTTP 控制台 +
