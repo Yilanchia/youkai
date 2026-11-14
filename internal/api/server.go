@@ -387,6 +387,10 @@ func (s *Server) handleEngagementScoped(w http.ResponseWriter, r *http.Request) 
 		s.handleScope(w, r, eng)
 	case len(tail) >= 1 && tail[0] == "accounts":
 		s.handleAccounts(w, r, eng)
+	case len(tail) >= 1 && tail[0] == "mandate":
+		s.handleMandate(w, r, eng, tail[1:])
+	case len(tail) >= 1 && tail[0] == "chat":
+		s.handleChat(w, r, eng)
 	case len(tail) >= 1 && tail[0] == "audit":
 		rows, err := s.cfg.Store.AuditTail(r.Context(), eng.Name, queryInt(r, "limit", 200))
 		if err != nil {

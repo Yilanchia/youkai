@@ -258,3 +258,24 @@ DROP TRIGGER IF EXISTS report_snapshots_no_update ON report_snapshots;
 CREATE TRIGGER report_snapshots_no_update
   BEFORE UPDATE OR DELETE ON report_snapshots
   FOR EACH ROW EXECUTE FUNCTION report_snapshots_append_only();
+
+-- Signed mandates (ADR-005). A mandate lets tier-2 action CLASSES run without a
+-- per-step approval, inside a scope and budget, until it expires or a human stops
+-- it. The payload and signature are stored verbatim so an auditor can re-verify the
+-- authorisation without trusting this database.
+CREATE TABLE IF NOT EXISTS mandates (
+  id            BIGSERIAL PRIMARY KEY,
+  engagement_id BIGINT NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
+  payload       JSONB NOT NULL,
+  signature     TEXT NOT NULL,
+  assets        TEXT[] NOT NULL,
+  classes       TEXT[] NOT NULL,
+  max_requests  INT NOT NULL,
+  expires_at    TIMESTAMPTZ NOT NULL,
+  activated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  stopped_at    TIMESTAMPTZ,
+  approver      TEXT NOT NULL DEFAULT '',
+  basis         TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS mandates_eng_idx ON mandates (engagement_id, activated_at DESC);

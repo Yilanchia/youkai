@@ -539,6 +539,11 @@ func (s *Server) retryIntent(w http.ResponseWriter, r *http.Request, eng ledger.
 	tier := int(gate.Classify(it.Capability, it.Args))
 	if tier >= 2 {
 		next = ledger.StatusNeedsApproval
+		// ...unless a signed mandate already covers it: then it belongs back in the
+		// autonomous queue, not in front of a human who already said yes.
+		if s.mandateCoversIntent(r, eng, it) {
+			next = ledger.StatusTodo
+		}
 	}
 	if err := s.cfg.Store.SetIntentStatus(r.Context(), eng.ID, iid, next); err != nil {
 		writeErr(w, http.StatusInternalServerError, "%v", err)

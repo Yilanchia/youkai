@@ -179,3 +179,24 @@ nav details.more[open] > summary { margin-bottom: .2rem; }
   border: 1px solid var(--line); border-radius: 10px; background: var(--card);
 }
 .confirm-row input { margin-top: .25rem; }
+
+/* ---- v0.11: chat ---- */
+.chat-log { display: flex; flex-direction: column; gap: .5rem; margin: .8rem 0; max-height: 46vh; overflow: auto; }
+.bubble { padding: .55rem .75rem; border-radius: 10px; max-width: 86%; white-space: pre-wrap; line-height: 1.55; }
+.bubble.me { align-self: flex-end; background: #1d3327; border: 1px solid #2c5a41; }
+.bubble.ai { align-self: flex-start; background: var(--card2); border: 1px solid var(--line); }
+.chat-card { margin: .4rem 0 .6rem; }
+.chat-input { display: flex; gap: .6rem; align-items: flex-end; }
+.chat-input textarea { flex: 1; min-height: 64px; }
+.steps-list { margin: .3rem 0 .6rem 1.1rem; padding: 0; }
+.steps-list li { margin: .2rem 0; }
+.llm-light { font-size: 12px; padding: .15rem .5rem; border-radius: 999px; border: 1px solid var(--line); }
+.llm-light[data-state="ok"] { color: var(--accent); border-color: #2c5a41; }
+.llm-light[data-state="bad"] { color: var(--danger); border-color: #6a2f35; }
+.llm-light[data-state="off"], .llm-light[data-state="unknown"] { color: var(--muted); }
+pre.small { font-size: 11px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: .5rem .6rem; overflow: auto; }
+.mandate-banner {
+  display: flex; gap: .6rem; align-items: center; justify-content: space-between;
+  margin: .6rem 1.2rem 0; padding: .5rem .8rem; border-radius: 9px;
+  border: 1px solid #6a5a2f; background: #2a2413; color: #e8d9a8;
+}

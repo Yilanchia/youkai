@@ -13,7 +13,7 @@ const state = {
   token: "",
   engagements: [],
   current: null,
-  view: "approvals",
+  view: "chat",
   graph: null,
   intents: [],
   runs: [],
@@ -303,6 +303,7 @@ function render() {
       return;
     }
     switch (state.view) {
+      case "chat": return renderChat(host);
       case "approvals": return renderApprovals(host);
       case "evidence": return renderEvidence(host);
       case "runs": return renderRuns(host);
@@ -330,6 +331,20 @@ function renderChips() {
   for (const [label, value] of chips) {
     host.appendChild(el("span", { class: "chip" }, label + " ", el("b", {}, String(value ?? 0))));
   }
+  // AI status, always visible: grey = not configured, green = reachable,
+  // red = configured but failing. Clicking it re-runs the probe.
+  const llm = (state.config && state.config.llm) || {};
+  const light = (function () {
+    if (!llm.key_present && !llm.key_from_env) return { s: "off", t: "AI 未配置" };
+    if (state.llmTest && state.llmTest.ok) return { s: "ok", t: `AI ${llm.model || ""} · ${state.llmTest.latency_ms} ms` };
+    if (state.llmTest && state.llmTest.error) return { s: "bad", t: "AI 连不上:" + state.llmTest.error };
+    return { s: "unknown", t: "AI 未测试" };
+  })();
+  const dot = el("span", { class: "llm-light", "data-state": light.s }, light.t);
+  dot.style.cursor = "pointer";
+  dot.addEventListener("click", async () => { await testLLM(); render(); });
+  host.appendChild(dot);
+
   const pending = pendingIntents().length;
   const badge = $("#badge-approvals");
   badge.textContent = String(pending);

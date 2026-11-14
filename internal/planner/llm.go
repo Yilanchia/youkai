@@ -172,10 +172,16 @@ func (p *Planner) archive(ctx context.Context, req engine.ProposeRequest, call l
 
 // complete performs one OpenAI-compatible chat completion.
 func (p *Planner) complete(ctx context.Context, prompt string) (string, error) {
+	return p.completeWith(ctx, systemPrompt, prompt)
+}
+
+// completeWith is complete() with an explicit system prompt, so the conversational
+// surface can use its own closed schema without a second HTTP client.
+func (p *Planner) completeWith(ctx context.Context, sys, prompt string) (string, error) {
 	body := map[string]any{
 		"model": p.cfg.Model,
 		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
+			{"role": "system", "content": sys},
 			{"role": "user", "content": prompt},
 		},
 		"temperature":           p.cfg.Temperature,

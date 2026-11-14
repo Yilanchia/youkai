@@ -34,7 +34,8 @@
     <button id="new-engagement" class="primary tiny-btn">+ 新建任务</button>
 
     <nav id="nav">
-      <button data-view="runs" class="nav active">开始</button>
+      <button data-view="chat" class="nav active">对话</button>
+      <button data-view="runs" class="nav">开始</button>
       <button data-view="approvals" class="nav">待办审批<span id="badge-approvals" class="badge hidden"></span></button>
       <button data-view="evidence" class="nav">结果</button>
       <button data-view="accounts" class="nav">账号</button>
@@ -54,7 +55,7 @@
 
   <main class="main">
     <header class="topbar">
-      <h2 id="view-title">开始</h2>
+      <h2 id="view-title">对话</h2>
       <div class="chips" id="chips"></div>
     </header>
     <div id="next-step" class="next-step hidden"></div>
@@ -66,6 +67,7 @@
 
 <div id="modal" class="modal hidden"><div class="modal-body" id="modal-body"></div></div>
 <script src="/assets/wizard.js"></script>
+<script src="/assets/chat.js"></script>
 <script src="/assets/app.js"></script>
 </body>
 </html>

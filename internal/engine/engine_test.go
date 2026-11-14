@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"youkai/internal/ledger"
 )
@@ -28,6 +29,9 @@ type fakeStore struct {
 	nextFind   int64
 	nextIntent int64
 	finished   string
+	mandate    ledger.Mandate
+	mandateErr error
+	mandateUse int
 	scope      json.RawMessage
 }
 
@@ -717,4 +721,23 @@ func TestDeriveDoesNotRepeatACoveredCheck(t *testing.T) {
 	if probes != 1 {
 		t.Fatalf("probe intents for the covered endpoint = %d, want 1 (the guard failed)", probes)
 	}
+}
+
+// ActiveMandate lets a test decide, per case, whether a mandate is in force.
+func (f *fakeStore) ActiveMandate(_ context.Context, _ int64) (ledger.Mandate, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mandateErr != nil {
+		return ledger.Mandate{}, f.mandateErr
+	}
+	if f.mandate.ID == 0 {
+		return ledger.Mandate{}, ledger.ErrNotFound
+	}
+	return f.mandate, nil
+}
+
+func (f *fakeStore) MandateUsage(_ context.Context, _ string, _ time.Time) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mandateUse, nil
 }

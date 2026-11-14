@@ -262,3 +262,106 @@ func stringSlice(v any) []string {
 	}
 	return out
 }
+
+// ---- mandates (ADR-005) ----------------------------------------------------
+//
+// A mandate is the same signed record, read with a wider (but still closed) action
+// vocabulary: "read-only" plus "tier2:<class>". It is deliberately a SEPARATE
+// entry point from Verify: a per-step approval must not silently become a
+// standing authorisation because the parser got looser.
+
+// MandateActionPrefix marks a pre-authorised tier-2 class inside `actions`.
+const MandateActionPrefix = "tier2:"
+
+// MandateAction builds the action string for one class.
+func MandateAction(class string) string { return MandateActionPrefix + class }
+
+// VerifyMandate verifies a mandate record and returns the classes it covers.
+//
+// Differences from Verify, and only these:
+//   - `actions` may contain "tier2:<class>" for a class in knownClasses;
+//   - at least one action is still required;
+//   - the record must name the assets it applies to.
+//
+// Everything else - signature, basis length, approver, expiry, no open-ended
+// grants - is identical, because it is the same signature over the same payload.
+func (h *HighAuth) VerifyMandate(key string, now time.Time, knownClasses []string) (*HighAuthGrant, []string, error) {
+	if h == nil {
+		return nil, nil, fmt.Errorf("high-auth: empty record")
+	}
+	if h.Schema != HighAuthSchema {
+		return nil, nil, fmt.Errorf("high-auth: unexpected schema %q", h.Schema)
+	}
+	if len(h.Payload) == 0 {
+		return nil, nil, fmt.Errorf("high-auth: empty payload")
+	}
+	canonical, err := canonicalJSON(h.Payload)
+	if err != nil {
+		return nil, nil, fmt.Errorf("high-auth: canonicalise payload: %w", err)
+	}
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write([]byte(canonical))
+	want := hex.EncodeToString(mac.Sum(nil))
+	got := strings.ToLower(strings.TrimSpace(h.Signature))
+	if !hmac.Equal([]byte(want), []byte(got)) {
+		return nil, nil, fmt.Errorf("high-auth: signature does not verify")
+	}
+
+	g := &HighAuthGrant{
+		Tier:     stringField(h.Payload, "tier"),
+		Basis:    stringField(h.Payload, "basis"),
+		Approver: stringField(h.Payload, "approver"),
+		Assets:   stringSlice(h.Payload["assets"]),
+		Actions:  stringSlice(h.Payload["actions"]),
+		Nonce:    stringField(h.Payload, "nonce"),
+	}
+	g.IssuedAt, _ = time.Parse(time.RFC3339, stringField(h.Payload, "issued_at"))
+	g.ExpiresAt, _ = time.Parse(time.RFC3339, stringField(h.Payload, "expires_at"))
+
+	if g.Basis == "" || len([]rune(g.Basis)) < 8 {
+		return nil, nil, fmt.Errorf("high-auth: basis must say what authorises this (>=8 chars)")
+	}
+	if g.Approver == "" {
+		return nil, nil, fmt.Errorf("high-auth: approver is required")
+	}
+	if len(g.Assets) == 0 {
+		return nil, nil, fmt.Errorf("high-auth: no authorised assets")
+	}
+	if len(g.Actions) == 0 {
+		return nil, nil, fmt.Errorf("high-auth: no authorised actions")
+	}
+	if g.ExpiresAt.IsZero() {
+		return nil, nil, fmt.Errorf("high-auth: no expiry (refusing an open-ended authorisation)")
+	}
+	if now.After(g.ExpiresAt) {
+		return nil, nil, fmt.Errorf("high-auth: expired at %s", g.ExpiresAt.Format(time.RFC3339))
+	}
+
+	known := map[string]bool{}
+	for _, c := range knownClasses {
+		known[strings.ToLower(strings.TrimSpace(c))] = true
+	}
+	var classes []string
+	for _, a := range g.Actions {
+		la := strings.ToLower(strings.TrimSpace(a))
+		if la == "read-only" {
+			continue
+		}
+		if !strings.HasPrefix(la, MandateActionPrefix) {
+			return nil, nil, fmt.Errorf("high-auth: action %q is not permitted in a mandate", a)
+		}
+		class := strings.TrimPrefix(la, MandateActionPrefix)
+		if !known[class] {
+			return nil, nil, fmt.Errorf("high-auth: unknown autonomy class %q", class)
+		}
+		classes = append(classes, class)
+	}
+	return g, classes, nil
+}
+
+// CanonicalPayload exposes the exact bytes a signature covers.
+//
+// Exported so tests (and anyone re-verifying a stored mandate offline) can compute
+// the same digest without re-implementing the rules. It is NOT a signer: no key is
+// involved, and nothing in youkaid calls it on the signing side.
+func CanonicalPayload(m map[string]any) (string, error) { return canonicalJSON(m) }

@@ -245,3 +245,61 @@ func sortStrings(s []string) {
 		}
 	}
 }
+
+// ---- autonomy classes (ADR-005) -------------------------------------------
+//
+// A mandate pre-authorises CLASSES of tier-2 work, not individual steps. A class
+// is exactly one passport switch, so "what the mandate covers" and "what the
+// passport would unlock" are the same vocabulary - an operator cannot sign a
+// mandate for something the passport cannot express.
+
+// Autonomy classes.
+const (
+	ClassParam        = "param"        // active parameter probing (allow_active_probes)
+	ClassWAF          = "waf"          // WAF behaviour observation (allow_waf_probe)
+	ClassSeeding      = "seeding"      // object/account seeding (allow_object_seeding)
+	ClassRegistration = "registration" // self-service registration (allow_account_provisioning)
+)
+
+// AutonomyClass maps a capability to the mandate class it needs, or "".
+func AutonomyClass(capability string) string {
+	switch strings.ToLower(strings.TrimSpace(capability)) {
+	case "param", "param_adaptive":
+		return ClassParam
+	case "waf":
+		return ClassWAF
+	case "accounts_seed", "object_seed":
+		return ClassSeeding
+	case "accounts_register":
+		return ClassRegistration
+	case "login", "accounts_provision", "download":
+		// These write to the target but do not fit a class: a mandate cannot
+		// pre-authorise them, so they keep the one-at-a-time door.
+		return ""
+	}
+	return ""
+}
+
+// ClassFromSwitch maps a passport switch name to its mandate class.
+func ClassFromSwitch(sw string) string {
+	switch sw {
+	case "allow_active_probes":
+		return ClassParam
+	case "allow_waf_probe":
+		return ClassWAF
+	case "allow_object_seeding":
+		return ClassSeeding
+	case "allow_account_provisioning":
+		return ClassRegistration
+	}
+	return ""
+}
+
+// KnownClass reports whether a name is a recognised autonomy class.
+func KnownClass(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case ClassParam, ClassWAF, ClassSeeding, ClassRegistration:
+		return true
+	}
+	return false
+}

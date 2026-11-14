@@ -39,6 +39,11 @@ type Store interface {
 	Ingest(ctx context.Context, engagementID int64, runID *int64, intentID *int64, obs ledger.Observation) (ledger.IngestResult, error)
 	UpsertAsset(ctx context.Context, engagementID int64, seed ledger.AssetSeed) (int64, error)
 	FinishRun(ctx context.Context, runID int64, status, stopReason string, steps, derived int) error
+	// ActiveMandate is how ADR-005 reaches the engine: a mandate is data in the
+	// store (never a flag passed in), so stopping one takes effect on the next run.
+	ActiveMandate(ctx context.Context, engagementID int64) (ledger.Mandate, error)
+	// MandateUsage counts requests actually sent since the mandate was activated.
+	MandateUsage(ctx context.Context, engagement string, since time.Time) (int, error)
 }
 
 // Dispatcher runs one capability. The API layer builds it from the web and
@@ -233,7 +238,14 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 			return rep, err
 		}
 
-		work, blocked := e.choose(g, e.cfg.MaxSteps-steps)
+		mc := e.loadMandate(ctx)
+		work, blocked := e.choose(g, e.cfg.MaxSteps-steps, mc)
+		if mc.usedUp {
+			if err := e.cfg.Store.AppendTrace(ctx, e.cfg.EngagementID, 0,
+				"mandate budget exhausted: autonomous tier-2 work stops until a human signs a new mandate"); err != nil {
+				_ = err
+			}
+		}
 
 		if len(work) == 0 {
 			if len(blocked) > 0 {
@@ -263,7 +275,7 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 			return finish(StopIdle, rep.Reason)
 		}
 
-		recs := e.execBatch(ctx, work, runID)
+		recs := e.execBatch(ctx, work, runID, mc)
 		steps += len(recs)
 		rep.Steps = append(rep.Steps, recs...)
 		for _, rec := range recs {
@@ -278,7 +290,7 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 }
 
 // choose splits intents into executable-now (tier 1, deps met) and waiting-at-the-door.
-func (e *Engine) choose(g ledger.GraphView, budget int) (work, blocked []ledger.Intent) {
+func (e *Engine) choose(g ledger.GraphView, budget int, mc mandateCtx) (work, blocked []ledger.Intent) {
 	done := map[int64]bool{}
 	for _, it := range g.Intents {
 		if it.Status == ledger.StatusDone || it.Status == ledger.StatusSkipped {
@@ -294,7 +306,20 @@ func (e *Engine) choose(g ledger.GraphView, budget int) (work, blocked []ledger.
 		}
 		tier := e.effectiveTier(it)
 		switch {
+		case tier >= gate.TierDeep:
+			// Tier 3 is not reachable by any authorisation, mandate or not.
+			blocked = append(blocked, it)
 		case tier >= gate.TierProof:
+			// A human-signed mandate can pre-authorise a CLASS of tier-2 work for a
+			// TARGET it names. Everything else stays behind the one-at-a-time door.
+			//
+			// needs_approval is included on purpose: a step parked before the mandate
+			// was signed should start moving the moment the fence covers it, without
+			// asking the operator to re-queue it by hand.
+			if (it.Status == ledger.StatusTodo || it.Status == ledger.StatusNeedsApproval) && mc.covers(it) {
+				work = append(work, it)
+				continue
+			}
 			blocked = append(blocked, it)
 		case it.Status == ledger.StatusTodo && tier.AutonomousOK():
 			work = append(work, it)
@@ -402,7 +427,7 @@ func relatedEvidence(g ledger.GraphView, it ledger.Intent) []string {
 }
 
 // execBatch claims and runs tier-1 intents.
-func (e *Engine) execBatch(ctx context.Context, batch []ledger.Intent, runID int64) []StepRecord {
+func (e *Engine) execBatch(ctx context.Context, batch []ledger.Intent, runID int64, mc mandateCtx) []StepRecord {
 	type job struct {
 		intent ledger.Intent
 		err    error
@@ -443,7 +468,7 @@ func (e *Engine) execBatch(ctx context.Context, batch []ledger.Intent, runID int
 						fmt.Sprintf("capability panic: %v (no retry; intent left active)", p))
 				}
 			}()
-			recs[i] = e.execOne(ctx, it, runID)
+			recs[i] = e.execOne(ctx, it, runID, !tierAutonomous(e, it) && mc.covers(it))
 		}(i, jobs[i].intent)
 	}
 	wg.Wait()
@@ -451,16 +476,29 @@ func (e *Engine) execBatch(ctx context.Context, batch []ledger.Intent, runID int
 }
 
 // execOne runs exactly one claimed intent.
-func (e *Engine) execOne(ctx context.Context, it ledger.Intent, runID int64) StepRecord {
+func (e *Engine) execOne(ctx context.Context, it ledger.Intent, runID int64, mandated bool) StepRecord {
 	started := e.cfg.Now()
 	rec := StepRecord{IntentID: it.ID, Capability: it.Capability, Tier: int(e.effectiveTier(it))}
 	dec := gate.Explain(it.Capability, it.Args)
 
 	// Second wall check. choose() already filtered; a worker that trusts its
 	// caller is not a wall.
-	if !dec.Allowed() {
+	//
+	// A mandated step is the one exception, and it is narrow: the gate still says
+	// tier 2, so the mandate is re-read from the store right here. A stop or expiry
+	// that landed between the round and this step is therefore caught before the
+	// request, not after it.
+	if !dec.Allowed() && !mandated {
 		_ = e.cfg.Store.SetIntentStatus(ctx, e.cfg.EngagementID, it.ID, ledger.StatusNeedsApproval)
 		msg := "gate refused at dispatch: " + dec.Reason
+		_ = e.cfg.Store.AppendTrace(ctx, e.cfg.EngagementID, it.ID, msg)
+		rec.Err = msg
+		rec.Trace = msg
+		return rec
+	}
+	if mandated && !e.loadMandate(ctx).covers(it) {
+		_ = e.cfg.Store.SetIntentStatus(ctx, e.cfg.EngagementID, it.ID, ledger.StatusNeedsApproval)
+		msg := "mandate no longer covers this step (stopped, expired, or out of budget): parked for a human"
 		_ = e.cfg.Store.AppendTrace(ctx, e.cfg.EngagementID, it.ID, msg)
 		rec.Err = msg
 		rec.Trace = msg
@@ -488,6 +526,11 @@ func (e *Engine) execOne(ctx context.Context, it ledger.Intent, runID int64) Ste
 
 	trace := fmt.Sprintf("capability=%s ok=true tier=%d facts=%d findings=%d",
 		it.Capability, rec.Tier, rec.Facts, rec.Findings)
+	if mandated {
+		// The report and the conversation both need to say HOW this ran: under a
+		// human-signed mandate, not under a per-step approval.
+		trace += " under=mandate"
+	}
 	if len(obs.RequestIDs) > 0 {
 		trace += " request_ids=" + joinLimited(obs.RequestIDs, 6)
 	}
@@ -615,4 +658,9 @@ func (e *Engine) priorForPrompt() []ledger.TraceHit {
 		return e.priorWork[len(e.priorWork)-maxPrior:]
 	}
 	return e.priorWork
+}
+
+// tierAutonomous reports whether the gate would let this intent run on its own.
+func tierAutonomous(e *Engine, it ledger.Intent) bool {
+	return e.effectiveTier(it).AutonomousOK()
 }

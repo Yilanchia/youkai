@@ -202,6 +202,17 @@ func (m *Manager) Propose(ctx context.Context, req engine.ProposeRequest) ([]led
 
 // Probe tests a configuration without touching the archive: it is a connectivity
 // check, not a plan.
+// Chat delegates to the installed planner, or reports that none is configured.
+func (m *Manager) Chat(ctx context.Context, req ChatRequest) (ChatReply, error) {
+	m.mu.Lock()
+	p := m.pl
+	m.mu.Unlock()
+	if p == nil {
+		return ChatReply{}, fmt.Errorf("planner: no model configured")
+	}
+	return p.Chat(ctx, req)
+}
+
 func (m *Manager) Probe(ctx context.Context, cfg Config) (time.Duration, error) {
 	pl, err := New(Config{
 		BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, Model: cfg.Model,
