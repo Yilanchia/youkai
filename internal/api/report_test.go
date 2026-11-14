@@ -254,3 +254,42 @@ func TestDisclosureRefusesCandidates(t *testing.T) {
 		t.Fatal("CVSS is not labelled as an estimate")
 	}
 }
+
+// TestRetryRequeuesABlockedStep: a step that failed (the target was down) must be
+// retryable, otherwise one transient error wedges that capability for good.
+func TestRetryRequeuesABlockedStep(t *testing.T) {
+	f := newFixture(t, "")
+	ctx := context.Background()
+
+	it, _, err := f.store.EnsureIntent(ctx, f.eng.ID, ledger.IntentSpec{
+		Capability: "probe",
+		Args:       map[string]any{"url": "http://127.0.0.1:9/gone"},
+		Tier:       1,
+	})
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if err := f.store.SetIntentStatus(ctx, f.eng.ID, it.ID, ledger.StatusBlocked); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+
+	code, body := f.do(t, http.MethodPost,
+		fmt.Sprintf("/api/engagements/%d/intents/%d/retry", f.eng.ID, it.ID), nil, nil)
+	if code != http.StatusOK {
+		t.Fatalf("retry = %d %v", code, body)
+	}
+	got, err := f.store.Intent(ctx, f.eng.ID, it.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.Status != ledger.StatusTodo {
+		t.Fatalf("status after retry = %q, want todo", got.Status)
+	}
+
+	// A step that is not blocked is refused: retry is not a general reset.
+	code, _ = f.do(t, http.MethodPost,
+		fmt.Sprintf("/api/engagements/%d/intents/%d/retry", f.eng.ID, it.ID), nil, nil)
+	if code != http.StatusBadRequest {
+		t.Fatalf("retry of a todo step = %d, want 400", code)
+	}
+}

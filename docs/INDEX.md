@@ -23,6 +23,7 @@
 | [DEVPLAN-v0.7](DEVPLAN-v0.7.md) | 已实现 |
 | [DEVPLAN-v0.8](DEVPLAN-v0.8.md) | 已实现 |
 | [DEVPLAN-v0.9](DEVPLAN-v0.9.md) | 已实现 |
+| [DEVPLAN-v0.10](DEVPLAN-v0.10.md) | 已实现 |
 
 ## 进度(IMPL-STATUS)
 
@@ -37,6 +38,7 @@
 | [IMPL-STATUS-v0.7](IMPL-STATUS-v0.7.md) | 现行 | 过程记忆(trace 检索) |
 | [IMPL-STATUS-v0.8](IMPL-STATUS-v0.8.md) | 现行 | 工程化(CI / 许可 / 基准) |
 | [IMPL-STATUS-v0.9](IMPL-STATUS-v0.9.md) | 现行 | 检测覆盖(API 文档 / GraphQL / JWT / OAuth) |
+| [IMPL-STATUS-v0.10](IMPL-STATUS-v0.10.md) | 现行 | 极简向导式 UX(只问网址) |
 
 ## 验证
 

@@ -208,7 +208,7 @@ function bindChrome() {
     location.reload();
   });
   $("#engagement").addEventListener("change", (e) => selectEngagement(Number(e.target.value)));
-  $("#new-engagement").addEventListener("click", () => openScopeModal("new"));
+  $("#new-engagement").addEventListener("click", () => openTaskWizard("new"));
   document.querySelectorAll(".nav").forEach((btn) =>
     btn.addEventListener("click", () => setView(btn.dataset.view))
   );
@@ -219,8 +219,8 @@ function setView(view) {
   state.view = view;
   document.querySelectorAll(".nav").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   const titles = {
-    approvals: "审批台", evidence: "证据 · 报告", runs: "任务台",
-    graph: "探索图", accounts: "账号 · 归属", config: "配置 · 隔离墙", audit: "审计日志",
+    runs: "开始", approvals: "待办审批", evidence: "结果",
+    accounts: "账号", config: "设置", graph: "探索图", audit: "审计日志",
   };
   $("#view-title").textContent = titles[view] || view;
   render();
@@ -292,12 +292,14 @@ function connectSSE() {
 
 function render() {
   renderChips();
+  renderNextStep();
+  renderOnboarding();
   const host = $("#view");
   host.replaceChildren();
   try {
     if (!state.current) {
       host.appendChild(el("div", { class: "empty" },
-        "先建一个作业:给它名字和一个授权护照(scope)。没有护照,youkai 一个请求都不会发。"));
+        "还没有任务。点「新建任务」,只填一个网址就行 —— 授权范围会自动按安全默认填好。"));
       return;
     }
     switch (state.view) {
@@ -342,7 +344,7 @@ function pendingIntents() {
 
 function tierTag(tier) {
   if (tier >= 3) return el("span", { class: "tag" }, "tier 3 · 永不执行");
-  if (tier === 2) return el("span", { class: "tag t2" }, "tier 2 · 需人批");
+  if (tier === 2) return el("span", { class: "tag t2" }, "高风险 · 需你确认");
   return el("span", { class: "tag t1" }, "tier 1 · 只读");
 }
 
@@ -489,7 +491,7 @@ async function renderEvidence(host) {
     el("h3", {}, "覆盖声明"),
     el("p", {}, cov.statement || "—"),
     el("p", { class: "hint" },
-      "覆盖数字来自审计表(实际发出的请求),不是来自护照(允许去的地方)。未列出的资产不在报告范围内。")));
+      "覆盖数字来自审计表(实际发出的请求),不是来自授权范围(允许去的地方)。未列出的资产不在报告范围内。")));
 
   if ((b.incomplete || []).length) {
     host.appendChild(el("div", { class: "card warn" },
@@ -610,25 +612,56 @@ function downloadReport(format) {
 /* ---- runs ---------------------------------------------------------------- */
 
 function renderRuns(host) {
+  const blocked = (state.intents || [])
+    .map((row) => row.intent || row)
+    .filter((it) => it.status === "blocked");
+  if (blocked.length) {
+    const btn = el("button", { class: "primary tiny-btn" }, `重试 ${blocked.length} 个失败步骤`);
+    btn.addEventListener("click", async () => {
+      banner("");
+      let done = 0;
+      for (const it of blocked) {
+        try { await api(`/api/engagements/${state.current.id}/intents/${it.id}/retry`, { method: "POST" }); done++; }
+        catch (e) { banner("重试失败:" + e.message); break; }
+      }
+      if (done) banner(`已重新排队 ${done} 个步骤。点「开始扫描」继续。`, "ok");
+      await refresh();
+    });
+    host.appendChild(el("div", { class: "card" },
+      el("h3", {}, "上次有几个步骤失败了"),
+      el("p", { class: "hint" }, "通常是对面站点当时连不上或临时出错。修好之后可以重新排队;只读步骤会自己再跑一次,高风险步骤仍需要你重新批准。"),
+      el("div", { class: "actions" }, btn),
+      el("p", { class: "mono tiny" }, blocked.map((it) => `#${it.id} ${it.capability}`).join(" · "))));
+  }
   const seeds = el("input", { type: "text", placeholder: "可选:额外种子 URL(逗号分隔)" });
   const steps = el("input", { type: "text", placeholder: "max_steps", value: "10" });
   host.appendChild(el("div", { class: "card" },
-    el("h3", {}, "跑一轮只读取证"),
+    el("h3", {}, "开始扫描"),
     el("p", { class: "hint" },
-      "自治循环只执行 tier 1。遇到需要人批的动作就停下,回到审批台。"),
-    el("div", { class: "actions" }, seeds, steps,
+      "youkai 会自己对目标跑只读检查(页面、响应头、有没有暴露的文件)。需要你点头的动作会停下,停在「待办审批」。"),
+    el("div", { class: "actions" },
       el("button", { class: "primary", onclick: async () => {
         banner("");
         try {
-          const seedList = seeds.value.split(",").map((s) => s.trim()).filter(Boolean);
           const r = await api(`/api/engagements/${state.current.id}/runs`, {
-            method: "POST",
-            body: JSON.stringify({ seed_urls: seedList, max_steps: Number(steps.value) || 10 }),
+            method: "POST", body: JSON.stringify({ max_steps: 10 }),
           });
-          banner(`已启动 run #${r.run_id}。`, "ok");
+          banner(`已开始扫描(task #${r.run_id})。它会自己跑一会儿,完成后这里会刷新。`, "ok");
           await refresh();
         } catch (e) { banner("启动失败:" + e.message); }
-      } }, "开始"))));
+      } }, "开始扫描"),
+      el("details", { class: "advanced" },
+        el("summary", {}, "高级:自定义种子 / 步数"),
+        el("div", { class: "field" }, el("span", { class: "label" }, "额外种子 URL(逗号分隔)"), seeds),
+        el("div", { class: "field" }, el("span", { class: "label" }, "本轮最多几步"), steps)))));
+
+  // One line of outcome after a scan, so "what happened" does not require the graph.
+  const st = (state.graph && state.graph.stats) || {};
+  if ((st.audit_allowed || 0) + (st.audit_blocked || 0) > 0) {
+    host.appendChild(el("div", { class: "next-step" },
+      el("span", {}, `到目前为止:${st.audit_allowed || 0} 次请求、${st.findings || 0} 条发现(已确认 ${st.verified || 0})。`),
+      el("button", { class: "ghost tiny-btn", onclick: () => setView("evidence") }, "看结果")));
+  }
 
   host.appendChild(el("div", { class: "sec" }, `运行记录 (${state.runs.length})`));
   if (!state.runs.length) {
@@ -640,7 +673,7 @@ function renderRuns(host) {
     tbody.appendChild(el("tr", {},
       el("td", { class: "mono" }, "#" + r.id),
       el("td", {}, el("span", { class: "state " + (r.status === "error" ? "blocked" : "allowed") }, r.status)),
-      el("td", {}, r.stop_reason || "—"),
+      el("td", {}, stopText(r.stop_reason)),
       el("td", { class: "mono" }, String(r.steps)),
       el("td", { class: "mono" }, r.started_at ? new Date(r.started_at).toLocaleString() : "—"),
       el("td", {}, r.ended_at ? new Date(r.ended_at).toLocaleTimeString() : "运行中…")));
@@ -715,7 +748,7 @@ async function renderAccounts(host) {
 
   banner("");
   host.appendChild(el("p", { class: "hint" },
-    "账号层是 BOLA/IDOR 的燃料:身份来自清单,归属由操作员声明或由账号自建。登录与播种都是档 2,只能在审批台一步一批。"));
+    "账号层是 BOLA/IDOR 的燃料:身份来自清单,归属由操作员声明或由账号自建。登录与播种都是高风险,只能在待办审批一步一批。"));
 
   for (const w of (view.warnings || [])) {
     host.appendChild(el("div", { class: "banner" }, w));
@@ -732,15 +765,15 @@ async function renderAccounts(host) {
   }
 
   const actions = el("div", { class: "actions" },
-    el("button", { class: "ghost", onclick: () => deriveIntent("accounts_provision", {}, "为清单里每个账号登录一次并保存会话(档 2)") },
-      "派生 provision 意图(档 2)"),
-    el("button", { class: "ghost", onclick: () => deriveIntent("accounts_seed", { confirm: true }, "每账号创建一个最小对象作为归属真值(档 2)") },
-      "派生 seed 意图(档 2)"),
+    el("button", { class: "ghost", onclick: () => deriveIntent("accounts_provision", {}, "为清单里每个账号登录一次并保存会话(高风险)") },
+      "派生 provision 意图(高风险)"),
+    el("button", { class: "ghost", onclick: () => deriveIntent("accounts_seed", { confirm: true }, "每账号创建一个最小对象作为归属真值(高风险)") },
+      "派生 seed 意图(高风险)"),
     el("button", { class: "ghost", onclick: () => deriveIntent("accounts_show", {}, "只读刷新账号视图") },
       "派生 accounts_show 意图(只读)"));
   host.appendChild(actions);
   host.appendChild(el("p", { class: "hint" },
-    "派生出来的档 2 意图会停在审批台,需要你逐条批准(并且登录/播种还要求 scope 里对应的开关)。"));
+    "派生出来的高风险 意图会停在待办审批,需要你逐条批准(并且登录/播种还要求 scope 里对应的开关)。"));
 
   // Render a page as one of these identities. The form never holds a
   // credential: it names a session, and the dispatcher attaches the cookie
@@ -781,7 +814,7 @@ async function deriveIntent(capability, args, rationale) {
     });
     const created = r.created ? "已创建" : "已存在";
     banner(`意图 #${r.intent.id} ${created}(${capability},tier ${r.gate.tier})。` +
-      (r.gate.tier >= 2 ? "它停在审批台,等你批准。" : "没有可领的只读步骤时引擎会自己跑它。"), "ok");
+      (r.gate.tier >= 2 ? "它停在待办审批,等你批准。" : "没有可领的只读步骤时引擎会自己跑它。"), "ok");
     await refresh();
   } catch (e) {
     banner("派生意图失败:" + e.message);
@@ -862,9 +895,9 @@ async function renderConfig(host) {
   });
 
   host.appendChild(el("div", { class: "card" },
-    el("h3", {}, "LLM 补位规划器"),
+    el("h3", {}, "AI 模型(可选)"),
     el("p", { class: "hint" },
-      "模型怎么连在这里配;保存后热生效。key 永不回显:要么引用环境变量(推荐),要么加密保存。"),
+      "配了之后 youkai 规划得更聪明;不配也能用,内置规则会自己跑。保存即生效,不用重启。key 只显示“已配置”,永不回显。"),
     el("p", {}, el("label", {}, enabled, " 启用(未启用时确定性循环照跑)")),
     el("div", { class: "field" }, el("span", { class: "label" }, "base_url"), baseURL),
     el("div", { class: "field" }, el("span", { class: "label" }, "model"), model),
@@ -881,14 +914,14 @@ async function renderConfig(host) {
   /* -------- passport: current + edit -------- */
   const scope = (state.current && state.current.scope) || {};
   const switches = [
-    ["allow_active_probes", "主动探针(param/waf 档 2)"],
-    ["allow_waf_probe", "WAF 画像(档 2)"],
-    ["allow_object_seeding", "对象播种(档 2)"],
-    ["allow_account_provisioning", "账号注册(档 2)"],
+    ["allow_active_probes", "主动探针(param/waf 高风险)"],
+    ["allow_waf_probe", "WAF 画像(高风险)"],
+    ["allow_object_seeding", "对象播种(高风险)"],
+    ["allow_account_provisioning", "账号注册(高风险)"],
     ["allow_private", "私有/环回地址"],
   ].filter(([k]) => scope[k]);
   host.appendChild(el("div", { class: "card" },
-    el("h3", {}, "授权护照"),
+    el("h3", {}, "授权范围"),
     el("dl", { class: "kv" },
       el("dt", {}, "include"), el("dd", { class: "mono" }, (scope.include || []).join(", ") || "—"),
       el("dt", {}, "exclude"), el("dd", { class: "mono" }, (scope.exclude || []).join(", ") || "—"),
@@ -899,23 +932,23 @@ async function renderConfig(host) {
       el("dt", {}, "过期"), el("dd", { class: "mono" }, scope.expires_at || "—"),
       el("dt", {}, "授权依据"), el("dd", {}, scope.basis || "—")),
     el("div", { class: "actions" },
-      el("button", { class: "ghost", onclick: () => openScopeModal("edit") }, "编辑护照…"),
-      el("button", { class: "ghost", onclick: () => openScopeModal("new") }, "+ 新建作业…")),
-    el("p", { class: "hint" }, "放宽护照(加目标/加写方法/开档 2 开关)会写一条审计;它改变的是「能看哪里」,不是「能做什么」。")));
+      el("button", { class: "ghost", onclick: () => openTaskWizard("edit") }, "编辑授权范围…"),
+      el("button", { class: "ghost", onclick: () => openTaskWizard("new") }, "+ 新建任务…")),
+    el("p", { class: "hint" }, "放宽授权范围(加目标/加写方法/开高风险开关)会写一条审计;它改变的是「能看哪里」,不是「能做什么」。")));
 
   /* -------- the wall: read-only, no switches -------- */
   host.appendChild(el("div", { class: "card" },
-    el("h3", {}, "隔离墙(只读)"),
+    el("h3", {}, "安全边界(只读)"),
     el("dl", { class: "kv" },
       el("dt", {}, "利用提供者"),
       el("dd", { class: "state " + (provider.available ? "blocked" : "verified") }, provider.reason || "—"),
       el("dt", {}, "构建"), el("dd", {}, "OSS(无 youkai_full)"),
       el("dt", {}, "high-auth"), el("dd", {}, ha.configured ? "已配置 " + ha.env : "未配置 " + ha.env)),
-    el("p", { class: "hint" }, "这不是可配项:档 3 不在本仓库,档 2 永远要人批。配置面碰不到它们。")));
+    el("p", { class: "hint" }, "这不是可配项:档 3 不在本仓库,高风险 永远要人批。配置面碰不到它们。")));
 
   const tiers = cfg.tiers || {};
   const rows = (tiers.read_only || []).map((c) => [c, "tier 1 · 自治"]);
-  (tiers.proof || []).forEach((c) => rows.push([c, "tier 2 · 人批"]));
+  (tiers.proof || []).forEach((c) => rows.push([c, "高风险 · 人批"]));
   host.appendChild(el("div", { class: "sec" }, "能力分档"));
   host.appendChild(simpleTable(["capability", "档位"], rows));
 }
@@ -924,105 +957,6 @@ function currentHost() { return document.querySelector("#view"); }
 
 /* ---- passport editor (new + edit) ---------------------------------------- */
 
-function openScopeModal(mode) {
-  const editing = mode === "edit" && state.current;
-  const scope = (editing && state.current.scope) || {};
-  const name = el("input", { type: "text", placeholder: "作业名,如 lab-demo", value: editing ? state.current.name : "" });
-  const include = el("input", { type: "text", placeholder: "127.0.0.1:8080, https://lab.example", value: (scope.include || []).join(", ") });
-  const exclude = el("input", { type: "text", placeholder: "admin.lab.example(排除优先)", value: (scope.exclude || []).join(", ") });
-  const basis = el("input", { type: "text", placeholder: "授权依据(≥8 字)", value: scope.basis || "" });
-  const operator = el("input", { type: "text", placeholder: "操作员", value: scope.operator || "operator" });
-  const maxReq = el("input", { type: "text", placeholder: "2000", value: String(scope.max_requests || 2000) });
-  const rps = el("input", { type: "text", placeholder: "5", value: String(scope.rps || 5) });
-  const expires = el("input", { type: "text", placeholder: "2026-12-31T00:00:00Z", value: scope.expires_at || "" });
-
-  const methodList = ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"];
-  const methodBoxes = {};
-  for (const m of methodList) {
-    const cb = el("input", { type: "checkbox" });
-    cb.checked = (scope.methods || ["GET", "HEAD", "OPTIONS"]).includes(m);
-    methodBoxes[m] = cb;
-  }
-
-  const switchDefs = [
-    ["allow_private", "私有/环回地址(自建靶场)"],
-    ["allow_active_probes", "主动探针 param/waf(档 2)"],
-    ["allow_waf_probe", "WAF 画像(档 2)"],
-    ["allow_object_seeding", "对象播种(档 2)"],
-    ["allow_account_provisioning", "账号注册(档 2)"],
-  ];
-  const switchBoxes = {};
-  for (const [k] of switchDefs) {
-    const cb = el("input", { type: "checkbox" });
-    cb.checked = !!scope[k];
-    switchBoxes[k] = cb;
-  }
-
-  const writeMethodWarn = el("p", { class: "hint" },
-    "勾选写方法或档 2 开关只是「允许 it 发生」:param/waf/登录/播种仍然停在审批台,一步一批。");
-
-  const save = el("button", { class: "primary" }, editing ? "保存护照" : "创建作业");
-  save.addEventListener("click", async () => {
-    banner("");
-    const body = {
-      project: (include.value.split(",")[0] || "").trim(),
-      include: include.value.split(",").map((s) => s.trim()).filter(Boolean),
-      exclude: exclude.value.split(",").map((s) => s.trim()).filter(Boolean),
-      methods: methodList.filter((m) => methodBoxes[m].checked),
-      basis: basis.value.trim(),
-      operator: operator.value.trim(),
-      max_requests: Number(maxReq.value || 2000),
-      rps: Number(rps.value || 5),
-    };
-    const exp = normExpiry(expires.value);
-    if (exp) body.expires_at = exp;   // empty means "no expiry": omit rather than send ""
-    for (const [k] of switchDefs) body[k] = switchBoxes[k].checked;
-    try {
-      if (editing) {
-        await api(`/api/engagements/${state.current.id}/scope`, {
-          method: "PUT",
-          body: JSON.stringify({ scope: body, updated_by: operator.value.trim() || "operator" }),
-        });
-        closeModal();
-        await loadEngagements();
-        banner("护照已更新并记入审计。", "ok");
-        return;
-      }
-      const created = await api("/api/engagements", {
-        method: "POST",
-        body: JSON.stringify({ name: name.value.trim(), scope: body }),
-      });
-      closeModal();
-      await loadEngagements();
-      const warns = (created && created.warnings) || [];
-      banner(warns.length ? "作业已创建,但护照会拦断自己的目标:" + warns.join(";") : "作业已创建。",
-        warns.length ? "warn" : "ok");
-    } catch (e) {
-      banner("保存失败:" + e.message);
-    }
-  });
-
-  openModal(
-    el("h3", {}, editing ? "编辑授权护照" : "新建作业"),
-    el("p", { class: "muted" }, "护照决定 youkai 能看哪里。非法护照(空 include / * / *.tld / basis 太短 / 已过期)会被拒绝保存。"),
-    editing ? null : el("div", { class: "field" }, el("span", { class: "label" }, "名称"), name),
-    el("div", { class: "field" }, el("span", { class: "label" }, "include(授权目标)"), include),
-    el("div", { class: "field" }, el("span", { class: "label" }, "exclude(排除优先)"), exclude),
-    el("div", { class: "field" }, el("span", { class: "label" }, "methods"), el("div", { class: "row" },
-      ...methodList.map((m) => el("label", {}, methodBoxes[m], " " + m)))),
-    el("div", { class: "field" }, el("span", { class: "label" }, "档 2 开关"), el("div", {},
-      ...switchDefs.map(([k, label]) => el("label", { style: "display:block" }, switchBoxes[k], " " + label)))),
-    writeMethodWarn,
-    el("div", { class: "grid2" },
-      el("div", { class: "field" }, el("span", { class: "label" }, "请求预算"), maxReq),
-      el("div", { class: "field" }, el("span", { class: "label" }, "限速 rps"), rps),
-      el("div", { class: "field" }, el("span", { class: "label" }, "过期(RFC3339)"), expires)),
-    el("div", { class: "field" }, el("span", { class: "label" }, "授权依据"), basis),
-    el("div", { class: "field" }, el("span", { class: "label" }, "操作员"), operator),
-    el("div", { class: "actions" }, save, el("button", { class: "ghost", onclick: closeModal }, "取消")));
-}
-
-// normExpiry turns a UI datetime into RFC3339; empty stays empty (server default).
 function normExpiry(v) {
   const raw = (v || "").trim();
   if (!raw) return "";
@@ -1055,3 +989,16 @@ function renderAudit(host) {
 
 
 boot();
+// STOP_TEXT turns the engine's stop reasons into something an operator can read.
+// The engine keeps its English constants for logs and tests; this is the UI layer.
+function stopText(reason) {
+  const r = String(reason || "");
+  if (!r) return "—";
+  if (r.indexOf("no claimable intent") >= 0) return "这一轮没有可做的新步骤了";
+  if (r.indexOf("need a human") >= 0) return "停在高风险动作前,等你在待办审批点头";
+  if (r.indexOf("max_steps") >= 0 || r.indexOf("step budget") >= 0) return "达到本轮步数上限";
+  if (r.indexOf("sensitive") >= 0) return "发现疑似敏感数据,主动停下";
+  if (r.indexOf("cancelled") >= 0) return "已被取消";
+  if (r.indexOf("所有请求都被") >= 0) return r;
+  return r;
+}

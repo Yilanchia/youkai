@@ -11,7 +11,7 @@
   <form id="gate-form">
     <h1>youkai</h1>
     <p class="muted">本机控制台需要访问令牌。启动 <code>youkaid</code> 时它会打印带令牌的地址。</p>
-    <input id="gate-token" type="password" placeholder="API token" autocomplete="off" spellcheck="false">
+    <input id="gate-token" type="password" placeholder="访问令牌" autocomplete="off" spellcheck="false">
     <button type="submit">进入</button>
     <p id="gate-err" class="err"></p>
   </form>
@@ -23,24 +23,27 @@
       <span class="dot"></span>
       <div>
         <strong>youkai</strong>
-        <div class="muted tiny">read-only brain · tier 2 stops at a human</div>
+        <div class="muted tiny">只读取证 · 出格的动作都要你点头</div>
       </div>
     </div>
 
     <label class="field">
-      <span class="label">作业</span>
+      <span class="label">当前任务</span>
       <select id="engagement"></select>
     </label>
-    <button id="new-engagement" class="ghost tiny-btn">+ 新建作业</button>
+    <button id="new-engagement" class="primary tiny-btn">+ 新建任务</button>
 
     <nav id="nav">
-      <button data-view="approvals" class="nav active">审批台<span id="badge-approvals" class="badge hidden"></span></button>
-      <button data-view="evidence" class="nav">证据 · 报告</button>
-      <button data-view="runs" class="nav">任务台</button>
-      <button data-view="graph" class="nav">探索图</button>
-      <button data-view="accounts" class="nav">账号 · 归属</button>
-      <button data-view="config" class="nav">配置 · 墙</button>
-      <button data-view="audit" class="nav">审计日志</button>
+      <button data-view="runs" class="nav active">开始</button>
+      <button data-view="approvals" class="nav">待办审批<span id="badge-approvals" class="badge hidden"></span></button>
+      <button data-view="evidence" class="nav">结果</button>
+      <button data-view="accounts" class="nav">账号</button>
+      <button data-view="config" class="nav">设置</button>
+      <details class="more">
+        <summary>更多</summary>
+        <button data-view="graph" class="nav">探索图</button>
+        <button data-view="audit" class="nav">审计日志</button>
+      </details>
     </nav>
 
     <div class="foot">
@@ -51,15 +54,18 @@
 
   <main class="main">
     <header class="topbar">
-      <h2 id="view-title">审批台</h2>
+      <h2 id="view-title">开始</h2>
       <div class="chips" id="chips"></div>
     </header>
+    <div id="next-step" class="next-step hidden"></div>
+    <div id="onboarding" class="onboarding hidden"></div>
     <div id="banner" class="banner hidden"></div>
     <section id="view" class="view"></section>
   </main>
 </div>
 
 <div id="modal" class="modal hidden"><div class="modal-body" id="modal-body"></div></div>
+<script src="/assets/wizard.js"></script>
 <script src="/assets/app.js"></script>
 </body>
 </html>

@@ -67,6 +67,8 @@ func (s *Server) handleIntents(w http.ResponseWriter, r *http.Request, eng ledge
 			return
 		}
 		writeJSON(w, http.StatusOK, it)
+	case "retry":
+		s.retryIntent(w, r, eng, iid)
 	case "approve":
 		s.approveIntent(w, r, eng, iid)
 	case "execute":
@@ -509,4 +511,42 @@ func scopeSwitchValue(s discipline.Scope, name string) (bool, bool) {
 		return s.AllowAccountProvisioning, true
 	}
 	return false, false
+}
+
+// retryIntent requeues a step that ended in "blocked".
+//
+// A blocked step means the last attempt failed (the target was down, a transient
+// error, the scope changed). Without this it stays wedged forever: nothing claims
+// it, and the fingerprint dedupe refuses to derive it again. Retrying does not
+// loosen anything - a tier-1 step goes back into the autonomous queue and still
+// passes the guard, and a tier-2 step goes back in front of a human, where it
+// needs a fresh approval (the old one was consumed).
+func (s *Server) retryIntent(w http.ResponseWriter, r *http.Request, eng ledger.Engagement, iid int64) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	it, err := s.cfg.Store.Intent(r.Context(), eng.ID, iid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "%v", err)
+		return
+	}
+	if it.Status != ledger.StatusBlocked {
+		writeErr(w, http.StatusBadRequest, "只有失败的步骤可以重试(当前状态 %s)", it.Status)
+		return
+	}
+	next := ledger.StatusTodo
+	tier := int(gate.Classify(it.Capability, it.Args))
+	if tier >= 2 {
+		next = ledger.StatusNeedsApproval
+	}
+	if err := s.cfg.Store.SetIntentStatus(r.Context(), eng.ID, iid, next); err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	_ = s.cfg.Store.AppendTrace(r.Context(), eng.ID, iid, "requeued by operator (was blocked)")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"intent_id": iid, "status": next,
+		"next": "重新排队:只读步骤会在下一轮自己跑,高风险步骤要你重新批准",
+	})
 }
