@@ -70,7 +70,11 @@ func countingServer(t *testing.T) (*httptest.Server, *int32Counter) {
 		case "/redirect-in":
 			http.Redirect(w, r, "/ok", http.StatusFound)
 		default:
-			w.Header().Set("Set-Cookie", "sid=SECRETVALUE; Path=/; HttpOnly; Secure; SameSite=Strict")
+			// No Secure flag: this is a plain-HTTP test server, and whether a jar
+			// stores a Secure cookie received over http is a Go-version detail. The
+			// test below is about jar ISOLATION between clones, not cookie attributes,
+			// so it must not depend on that.
+			w.Header().Set("Set-Cookie", "sid=SECRETVALUE; Path=/; HttpOnly; SameSite=Strict")
 			w.Header().Set("X-Frame-Options", "")
 			_, _ = w.Write([]byte("ok"))
 		}
