@@ -17,8 +17,10 @@
 /.youkai/sessions*/
 /.pgsql/
 /lab/
+# Report artifacts are HTML; the SPA's entry point is not.
 *.html
 !/docs/**/*.html
+!/web/*.html
 # editor/backup artifacts
 *.exe~
 *~
