@@ -99,3 +99,25 @@ func hostOfURL(raw string) string {
 }
 
 var _ = context.Background
+
+// ReadySessions lists identities that have a usable stored session.
+//
+// The engine uses it to decide whether a multi-identity comparison is even possible;
+// it returns names only, never header values.
+func (d *Dispatcher) ReadySessions(ctx context.Context) ([]string, error) {
+	m, err := accounts.Loaded(d.accountsPath())
+	if err != nil || m == nil {
+		return nil, nil
+	}
+	store, err := accounts.NewSessionStore(d.sessionDir())
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, name := range m.Names() {
+		if store.Ready(name) {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}

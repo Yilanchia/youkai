@@ -103,6 +103,14 @@ var table = map[string]Tier{
 	"fingerprint":  TierReadOnly,
 	"browser":      TierReadOnly,
 	"headers":      TierReadOnly,
+	// Detection coverage (v0.9). All four are read-only checks: a spec fetch, one
+	// introspection query, a local token decode, and a discovery GET. The only write
+	// method among them is introspection (GraphQL requires POST), which the passport's
+	// method set still gates.
+	"api_spec":           TierReadOnly,
+	"graphql_introspect": TierReadOnly,
+	"jwt_audit":          TierReadOnly,
+	"oauth_audit":        TierReadOnly,
 	// Account layer: the read-only view of identities is tier 1; anything that
 	// authenticates or writes on the target is tier 2.
 	"accounts_show":  TierReadOnly,

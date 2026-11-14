@@ -369,15 +369,27 @@ func (s *Store) Ingest(ctx context.Context, engagementID int64, runID *int64, in
 }
 
 func upsertAsset(ctx context.Context, db execer, engagementID int64, a AssetSeed) (int64, error) {
-	props, err := json.Marshal(a.Props)
-	if err != nil {
-		props = []byte("{}")
+	// Never write JSON `null` for props. The upsert merges with
+	// `assets.props || EXCLUDED.props`, and in PostgreSQL `'null'::jsonb || obj`
+	// produces an ARRAY, not an object - which silently corrupts the props of every
+	// asset that was first created without any (found while wiring v0.9's api_spec).
+	props := []byte("{}")
+	if len(a.Props) > 0 {
+		encoded, err := json.Marshal(a.Props)
+		if err != nil {
+			return 0, fmt.Errorf("ledger: encode asset props: %w", err)
+		}
+		props = encoded
 	}
 	var id int64
-	err = db.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 		INSERT INTO assets (engagement_id, kind, value, props) VALUES ($1,$2,$3,$4)
 		ON CONFLICT (engagement_id, kind, value)
-		DO UPDATE SET props = assets.props || EXCLUDED.props
+		DO UPDATE SET props = CASE
+			WHEN jsonb_typeof(assets.props) = 'object'
+			 THEN assets.props || EXCLUDED.props
+			ELSE EXCLUDED.props
+		END
 		RETURNING id`, engagementID, a.Kind, a.Value, props).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("ledger: upsert asset %s: %w", a.Value, err)

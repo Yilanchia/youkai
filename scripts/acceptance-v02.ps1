@@ -650,7 +650,73 @@ try {
     Assert ($done.Count -ge 1) "executed steps carry a trace"
     Assert (($done | ForEach-Object { $_.trace } | Out-String) -notmatch "sess-alice|Cookie") "traces carry no credentials"
 
-    # ---- 15. database-level invariants -------------------------------------
+    # ---- 15. detection coverage: API schema / GraphQL / JWT / OAuth ---------
+    Write-Host "`n== detection coverage ==" -ForegroundColor Cyan
+
+    # The four v0.9 capabilities are tier 1: read-only, no approval.
+    foreach ($cap in @("api_spec", "graphql_introspect", "jwt_audit", "oauth_audit")) {
+        $i = New-Intent $engId $cap @{ url = "http://127.0.0.1:$labPort/" } "coverage probe"
+        Assert ($i.Code -eq 201) "$cap is registered"
+        Assert ($i.Body.gate.tier -eq 1) "$cap is classified tier 1"
+    }
+
+    $iSpec = New-Intent $engId "api_spec" @{ url = "http://127.0.0.1:$labPort/openapi.json" } "接入 API 文档"
+    $iGQL = New-Intent $engId "graphql_introspect" @{ url = "http://127.0.0.1:$labPort/graphql" } "读 GraphQL schema"
+    $iAuth = New-Intent $engId "oauth_audit" @{
+        url = "http://127.0.0.1:$labPort"
+        authorize_url = "http://127.0.0.1:$labPort/authorize?response_type=code&client_id=app&redirect_uri=http://127.0.0.1:$labPort/cb"
+    } "OAuth 配置审计"
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ max_steps = 8 }
+    Assert ($runRes.Code -eq 202) "coverage run accepted"
+    for ($i = 0; $i -lt 240; $i++) {
+        Start-Sleep -Milliseconds 500
+        $r = Api "GET" "/api/engagements/$engId/runs/$($runRes.Body.run_id)" $null
+        if ($r.Body.done) { break }
+    }
+    # The steps land as they finish; poll for the specific evidence rather than
+    # guessing a sleep (the run's "done" flag is not a promise about every row).
+    $g6 = $null
+    $oauthTitles = ""
+    for ($i = 0; $i -lt 60; $i++) {
+        $g6 = (Api "GET" "/api/engagements/$engId/graph" $null).Body
+        $oauthTitles = (@($g6.findings | Where-Object { $_.kind -eq "oauth" } | ForEach-Object { $_.title }) -join "|")
+        if ($oauthTitles -match "state" -and $oauthTitles -match "redirect_uri") { break }
+        Start-Sleep -Milliseconds 500
+    }
+    $factsText = ($g6.facts | ForEach-Object { $_.statement }) -join "`n"
+    $kinds = @($g6.findings | ForEach-Object { $_.kind })
+
+    Assert ($factsText -match "API 文档可读") "the OpenAPI document was parsed"
+    Assert (@($g6.assets | Where-Object { $_.kind -eq "endpoint" -and $_.value -match "/api/orders" }).Count -ge 1) "documented endpoints were registered as assets"
+    Assert ($factsText -match "GraphQL mutation:Mutation.deleteOrder") "GraphQL mutations were registered and labelled"
+    Assert ($factsText -match "GraphQL query:Query.order") "GraphQL queries were registered"
+    Assert ($kinds -contains "oauth") "OAuth configuration findings were produced"
+    Assert ($oauthTitles -match "state") "missing state is reported"
+    Assert ($oauthTitles -match "redirect_uri") "loose redirect_uri is reported"
+
+    # JWT: the lab's login now sets a deliberately weak token, so alice's session has one.
+    $iJwt = New-Intent $engId "jwt_audit" @{
+        session = "alice"; url = "http://127.0.0.1:$labPort/"
+    } "审计 alice 会话里的 JWT"
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ max_steps = 4 }
+    for ($i = 0; $i -lt 180; $i++) {
+        Start-Sleep -Milliseconds 500
+        $r = Api "GET" "/api/engagements/$engId/runs/$($runRes.Body.run_id)" $null
+        if ($r.Body.done) { break }
+    }
+    $g7 = (Api "GET" "/api/engagements/$engId/graph" $null).Body
+    $jwt = @($g7.findings | Where-Object { $_.kind -eq "jwt" })
+    Assert ($jwt.Count -ge 1) "the JWT audit produced findings"
+    if ($jwt.Count -ge 1) {
+        $titles = ($jwt | ForEach-Object { $_.title }) -join " / "
+        Assert ($titles -match "alg=none") "alg=none is reported"
+        Assert ($titles -match "exp") "a missing exp is reported"
+        Assert ($jwt[0].state -eq "candidate") "JWT findings are candidates"
+    }
+    $jwtText = ($g7.findings | Where-Object { $_.kind -eq "jwt" } | ConvertTo-Json -Depth 6 -Compress) + ($g7.facts | ConvertTo-Json -Depth 6 -Compress)
+    Assert ($jwtText -notmatch "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0") "the token itself never reached the ledger"
+
+    # ---- 16. database-level invariants -------------------------------------
     Write-Host "`n== database guards ==" -ForegroundColor Cyan
     $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE audit_log SET status=999;" 2>&1 | Out-String
     Assert ($out -match "append-only") "audit_log refuses UPDATE at the database level"

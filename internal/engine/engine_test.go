@@ -375,6 +375,14 @@ func TestRunsReadOnlyChainThenStopsAtTierTwo(t *testing.T) {
 				RequestIDs: []string{"R0002-bb"},
 			}, nil
 		}
+		if capability == "api_spec" {
+			// The v0.9 rule looks for an API document on every surface; in this fake
+			// there is none, which is a normal (and cheap) outcome.
+			return ledger.Observation{
+				Facts:      []ledger.FactSeed{{Statement: "没有 API 文档", Evidence: map[string]any{"request_id": "R0003-cc"}}},
+				RequestIDs: []string{"R0003-cc"},
+			}, nil
+		}
 		return ledger.Observation{}, fmt.Errorf("unexpected capability %q", capability)
 	}
 

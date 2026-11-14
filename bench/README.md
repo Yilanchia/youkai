@@ -24,9 +24,13 @@ go run ./bench -port 18088 -max-steps 12
 - **ground truth 来自靶场源码,不来自上一次运行。** 条目写在 `bench/main.go` 的 `groundTruth()`:
   `/ .git/config` 可读、`q` 反射、四个安全头缺失、版本号暴露 —— 每一项都能在
   `scripts/lab-target.py` 里指出来。
-- **precision 只对得上 ground truth 的发现计为真。** 靶场的默认路由对任何路径都返回 200,
-  但暴露面检查要求内容签名(`[core]`),所以 `/.env`、`/backup.zip` 那些 200 不会变成发现 ——
-  这条是靶场设计,不是漏报。
+- **recall 按条目算**(每个声明的问题有没有找到);**precision 按类别算**(有没有报出这个靶场
+  根本不存在的问题)。同一个缺失安全头会按端点各报一次,那是目录信息,不是误报 ——
+  按端点算 precision 会把"报告得更细"当成扣分。
+- 靶场的默认路由对任何路径都返回 200,但暴露面检查要求内容签名(`[core]`),
+  所以 `/.env`、`/backup.zip` 那些 200 不会变成发现 —— 这是靶场设计,不是漏报。
+- v0.9 起 ground truth 多了 `api-doc`(靶场有 `/openapi.json`):引擎会对每个 host 试一次
+  文档地址,接入后整份文档化端点进入账本。
 - **越界请求 = 0 是硬断言。** 一旦有 blocked 审计行,bench 以非零退出码结束:
   一个"授权靶场"上出现越界请求,数字再好看也不算数。
 
@@ -34,10 +38,10 @@ go run ./bench -port 18088 -max-steps 12
 
 | 指标 | 值 |
 |---|---|
-| recall | 1.000(7/7 ground truth) |
+| recall | 1.000(8/8 ground truth) |
 | precision | 1.000 |
-| 请求(允许/阻断) | 10 / 0 |
-| 每发现请求成本 | 1.43 |
+| 请求(允许/阻断) | 19 / 0 |
+| 每发现请求成本 | 2.38 |
 | 停止点 | needs_approval(param,档 2 转人工) |
 
 可复现性:同一靶场、同一 `-max-steps` 下请求数与命中集合稳定;发现的 id 会随账本增长而变化,

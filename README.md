@@ -302,6 +302,23 @@ Fetch 门管辖的 CDP 会话 —— 那就是未受闸出口。"无未闸请求
   存档的 `prompt` 就是完整输入,回放即可还原模型当时看到的内容。
 - 纯读:不发包、不碰 guard、不碰档位墙;trace 只有能力名/计数/request_id,无正文无凭据。
 
+## 检测覆盖(API 文档 / GraphQL / JWT / OAuth)
+
+这四项都是**只读、只判存在**的检查,全部走同一条 guard:
+
+| 能力 | 做什么 | 不做什么 |
+|---|---|---|
+| `api_spec` | 拉一份 OpenAPI 2/3(JSON/YAML),把 `paths × methods` 登记成端点资产与事实,标注认证要求与写方法 | 不验证端点(那是 scan/role_matrix 的事);**不跟随外部 `$ref`**;解析出的每个 URL 都重新过 scope,越界的只记"不可测" |
+| `graphql_introspect` | 对端点发**一次**标准 introspection,登记 query / mutation | 不跑任何其它 query/mutation;introspection 关闭就如实记"不可用",不猜 schema |
+| `jwt_audit` | 读会话里的 JWT 结构:alg=none、缺 exp、有效期过长、敏感 claim **名**、kid、jku/x5u | **不爆破密钥、不做 alg 混淆、不改签**;token 原文与签名不进账本,只记元数据 |
+| `oauth_audit` | 读 `/.well-known/openid-configuration`;审一次授权请求的 state/PKCE;对 `redirect_uri` 做**一次**只读观察 | 不完成授权码交换、不换 token、不跟随授权重定向 |
+
+`api_spec` 是放大器:文档登记后,`role_matrix` 能对**全量文档端点 × 多身份**做只读越权扫描。
+引擎规则会自动对每个 host 试一次 `<base>/openapi.json`,失败就记事实并由 trace 守卫阻止重复尝试。
+
+这三处"不"是结构性的,不是自觉:JWT 没有签名代码可调,introspection 查询是常量,
+OAuth 的 redirect 探测只有一次且不跟随。
+
 ## 证据与披露(Proof-Carrying Pentest)
 
 报告不是"扫到了什么"的回显,而是**第三方照着就能复核**的成品。`internal/report` 是纯函数

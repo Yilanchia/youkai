@@ -52,8 +52,10 @@ func (e *Engine) derive(ctx context.Context) (int, error) {
 		e.ruleBootstrapAssets,
 		e.ruleGitConfigProbe,
 		e.ruleSurfaceScan,
+		e.ruleAPISpec,
 		e.ruleArtifactChain,
 		e.ruleBolaCompare,
+		e.ruleDocSurfaceMatrix,
 		e.ruleProofFollowUp,
 	}
 	for _, rule := range rules {
@@ -432,6 +434,7 @@ func (e *Engine) ruleBolaCompare(ctx context.Context, _ ledger.GraphView) ([]der
 var coveredByTrace = map[string]bool{
 	"probe": true, "fingerprint": true, "scan": true, "headers": true,
 	"cors": true, "exposures": true, "redirect_check": true, "browser": true,
+	"api_spec": true,
 }
 
 // alreadyCovered reports whether this derivation repeats completed work.
@@ -476,4 +479,78 @@ func targetKey(args map[string]any) string {
 		return ""
 	}
 	return strings.ToLower(u.Host) + u.EscapedPath()
+}
+
+// SessionLister is implemented by a dispatcher that knows which identities have a
+// ready session. Optional: without it the engine simply never derives a matrix.
+type SessionLister interface {
+	ReadySessions(ctx context.Context) ([]string, error)
+}
+
+// ruleDocSurfaceMatrix turns a documented API into a matrix.
+//
+// When an API document has been ingested (facts tagged source=openapi) and at least
+// two identities are ready, the whole documented GET surface can be compared
+// read-only: role_matrix costs one GET per (endpoint, identity) and proves
+// reachability differences without touching state. This is the point of ingesting
+// the document at all.
+func (e *Engine) ruleDocSurfaceMatrix(ctx context.Context, g ledger.GraphView) ([]derivation, error) {
+	lister, ok := e.cfg.Store.(SessionLister)
+	if !ok || lister == nil {
+		return nil, nil
+	}
+	sessions, err := lister.ReadySessions(ctx)
+	if err != nil || len(sessions) < 2 {
+		return nil, nil
+	}
+	var urls []string
+	seen := map[string]bool{}
+	for _, f := range g.Facts {
+		if !hasTag(f.Tags, "source=openapi") {
+			continue
+		}
+		u, _ := f.Evidence["url"].(string)
+		if u == "" || seen[u] || len(urls) >= 10 {
+			continue
+		}
+		seen[u] = true
+		urls = append(urls, u)
+	}
+	if len(urls) == 0 {
+		return nil, nil
+	}
+	sort.Strings(sessions)
+	return []derivation{{
+		capability: "role_matrix",
+		args:       map[string]any{"urls": urls, "sessions": sessions},
+		rationale:  "API 文档已登记端点;用已就绪身份做一次只读权限矩阵,看谁能到哪。",
+		expected:   "端点 × 身份的状态/长度差异",
+	}}, nil
+}
+
+// ruleAPISpec looks for a machine-readable API document on each surface.
+//
+// One GET per host. If nothing is there, the capability says so in a fact and the
+// trace guard stops us asking again - the cost of being wrong is a single 404, and
+// the payoff is that the whole documented surface becomes testable instead of only
+// what a crawl stumbled onto.
+func (e *Engine) ruleAPISpec(_ context.Context, g ledger.GraphView) ([]derivation, error) {
+	var out []derivation
+	for _, a := range g.Assets {
+		if a.Kind != "host" {
+			continue
+		}
+		base, _ := a.Props["base"].(string)
+		if base == "" {
+			continue
+		}
+		out = append(out, derivation{
+			capability: "api_spec",
+			args:       map[string]any{"url": strings.TrimRight(base, "/") + "/openapi.json"},
+			rationale:  "如果站点提供了机器可读的 API 文档,接入它能把整份文档化端点变成可测面(只读一次 GET)。",
+			expected:   "OpenAPI/Swagger 文档及其端点清单",
+			anchors:    []string{a.Value},
+		})
+	}
+	return out, nil
 }

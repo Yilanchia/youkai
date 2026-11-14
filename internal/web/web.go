@@ -134,6 +134,10 @@ func initRegistry() {
 			newCapability("cors", "单项检查:CORS 任意源反射", runCORS),
 			newCapability("exposures", "单项检查:敏感路径暴露面", runExposures),
 			newCapability("redirect_check", "单项检查:跳转链与明文 HTTP 传输", runRedirectCheck),
+			newCapability("api_spec", "API 文档接入:解析 OpenAPI/Swagger,把文档化端点铺成可测面", runAPISpec),
+			newCapability("graphql_introspect", "GraphQL 自省:只发标准 introspection,登记 query/mutation", runGraphQLIntrospect),
+			newCapability("jwt_audit", "JWT 结构审计:只读解码,不爆破不伪造", runJWTAudit),
+			newCapability("oauth_audit", "OAuth/OIDC 配置审计:发现文档 + 单次只读授权观察", runOAuthAudit),
 
 			// ---- tier 2: proof-grade, human approval required ----------------
 			newCapability("param", "参数存在性探测:仅 SQL 错误签名/布尔差分/SSTI 求值", runParam),

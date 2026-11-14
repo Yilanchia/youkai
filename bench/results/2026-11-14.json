@@ -1,9 +1,9 @@
 {
   "schema": "YoukaiBench/v1",
   "lab": "scripts/lab-target.py",
-  "target": "http://127.0.0.1:18090",
-  "max_steps": 12,
-  "ran_at": "2026-11-14T06:53:40Z",
+  "target": "http://127.0.0.1:18094",
+  "max_steps": 14,
+  "ran_at": "2026-11-14T07:16:21Z",
   "recall": 1,
   "precision": 1,
   "ground_truth": [
@@ -11,49 +11,55 @@
       "key": "git-exposure",
       "expected": "仓库配置可读 (/.git/config 返回 200 且含 [core])",
       "found": true,
-      "finding": "#682 Git 配置可读"
+      "finding": "#769 Git 配置可读"
     },
     {
       "key": "reflection",
       "expected": "参数 q 反射进响应",
       "found": true,
-      "finding": "#681 参数 q 的值反射进响应"
+      "finding": "#775 参数 q 的值反射进响应"
     },
     {
       "key": "header-csp",
       "expected": "缺失 CSP",
       "found": true,
-      "finding": "#676 缺失安全响应头:CSP"
+      "finding": "#770 缺失安全响应头:CSP"
     },
     {
       "key": "header-xfo",
       "expected": "缺失 X-Frame-Options",
       "found": true,
-      "finding": "#677 缺失安全响应头:X-Frame-Options"
+      "finding": "#771 缺失安全响应头:X-Frame-Options"
     },
     {
       "key": "header-xcto",
       "expected": "缺失 X-Content-Type-Options",
       "found": true,
-      "finding": "#678 缺失安全响应头:X-Content-Type-Options"
+      "finding": "#772 缺失安全响应头:X-Content-Type-Options"
     },
     {
       "key": "header-referrer",
       "expected": "缺失 Referrer-Policy",
       "found": true,
-      "finding": "#679 缺失安全响应头:Referrer-Policy"
+      "finding": "#773 缺失安全响应头:Referrer-Policy"
     },
     {
       "key": "version",
       "expected": "服务端版本号暴露",
       "found": true,
-      "finding": "#680 服务端版本号暴露"
+      "finding": "#774 服务端版本号暴露"
+    },
+    {
+      "key": "api-doc",
+      "expected": "API 文档可公开读取",
+      "found": true,
+      "finding": "#763 API 文档可公开读取"
     }
   ],
-  "findings": 7,
-  "requests_allowed": 10,
+  "findings": 13,
+  "requests_allowed": 19,
   "requests_blocked": 0,
-  "requests_per_finding": 1.43,
+  "requests_per_finding": 2.38,
   "egress_zero": true,
   "stop_reason": "needs_approval — 1 intent(s) need a human: param",
   "note": "本机靶场、匿名只读链(档 1)的测量；档 2 需要人批,不在基准内;数字不外推。"

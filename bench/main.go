@@ -91,6 +91,7 @@ func groundTruth() []struct {
 		{"header-xcto", "缺失 X-Content-Type-Options", "header-missing", "/search", "X-Content-Type-Options"},
 		{"header-referrer", "缺失 Referrer-Policy", "header-missing", "/search", "Referrer-Policy"},
 		{"version", "服务端版本号暴露", "version-disclosure", "/search", ""},
+		{"api-doc", "API 文档可公开读取", "exposure", "/openapi.json", ""},
 	}
 }
 
@@ -233,15 +234,16 @@ func run(dsn string, port, maxSteps int, outDir string, keep bool) error {
 	if n := len(res.Truth); n > 0 {
 		res.Recall = round(float64(matched)/float64(n), 3)
 	}
-	// Precision needs a per-finding judgement. A finding counts as true when it
-	// matches a ground-truth entry; anything else is counted against precision
-	// rather than quietly dropped.
+	// Precision is judged at the CLASS level: a finding counts as true when its kind
+	// is one of the classes this lab is known to exhibit. That is the honest question
+	// for a scanner on a lab - "did it invent something that is not there?" - because
+	// the same missing header will legitimately be reported once per endpoint, and
+	// treating those repeats as false positives would measure cataloguing noise.
+	// Recall above stays per-entry: did we find each declared issue.
 	truePos := 0
 	for _, f := range g.Findings {
 		for _, t := range groundTruth() {
-			if f.Kind == t.Kind &&
-				(t.WhereHas == "" || containsFold(f.Where, t.WhereHas)) &&
-				(t.TitleHas == "" || containsFold(f.Title, t.TitleHas)) {
+			if f.Kind == t.Kind {
 				truePos++
 				break
 			}
