@@ -15,9 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"youkai/internal/config"
 	"youkai/internal/discipline"
 	"youkai/internal/engine"
 	"youkai/internal/ledger"
+	"youkai/internal/planner"
 )
 
 // ---- fixtures --------------------------------------------------------------
@@ -58,6 +60,11 @@ func newFixture(t *testing.T, highAuthKey string) *fixture {
 		t.Skipf("no PostgreSQL (%v); skipping API integration tests", err)
 	}
 	t.Cleanup(store.Close)
+	// One global settings row backs "the LLM configuration", so each test starts
+	// from an empty one instead of inheriting the previous test's values.
+	if _, err := store.Pool().Exec(ctx, `DELETE FROM settings`); err != nil {
+		t.Fatalf("clear settings: %v", err)
+	}
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -70,9 +77,15 @@ func newFixture(t *testing.T, highAuthKey string) *fixture {
 		Findings: []ledger.FindingSeed{{Title: "SSTI 存在性", Severity: "high", Where: "http://127.0.0.1:9/s"}},
 	}}
 
+	// Runtime configuration: a settings store with a passphrase, and a planner
+	// manager that starts disabled (tests install what they need).
+	settings := config.New(store.Pool(), []byte("test-session-passphrase"))
+	plannerMgr := planner.NewManager(store)
+
 	srv, err := New(Config{
 		Addr: "127.0.0.1:0", Store: store, Dispatcher: disp,
 		ArtifactDir: t.TempDir(), HighAuthKey: highAuthKey, MaxSteps: 3,
+		Settings: settings, Planner: plannerMgr,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

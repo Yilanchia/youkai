@@ -136,6 +136,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "<html><head><title>Verify</title></head><body>"
                 "<p>Please complete the CAPTCHA to continue</p></body></html>")
             return
+        if path == "/chat/completions":
+            # A minimal OpenAI-compatible endpoint, so the acceptance script can
+            # exercise the LLM "test connection" path without a real model.
+            self._send(200, json.dumps({
+                "choices": [{"message": {"content": "pong"}}],
+            }), "application/json")
+            return
         self._send(404, "not found", "text/plain")
 
 

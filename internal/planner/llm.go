@@ -357,3 +357,16 @@ func sortStrings(s []string) {
 		}
 	}
 }
+
+// Probe is a minimal connectivity check: one tiny completion, no archive entry.
+//
+// The point is to answer "does this base_url + model + key work, and how slow is
+// it", so the operator can find out before a run depends on the planner. The model
+// output is discarded: it is not evidence, and it must not reach the ledger.
+func (p *Planner) Probe(ctx context.Context) (time.Duration, error) {
+	start := time.Now()
+	if _, err := p.complete(ctx, "连通性测试:只回复 pong"); err != nil {
+		return time.Since(start), err
+	}
+	return time.Since(start), nil
+}

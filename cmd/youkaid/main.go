@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"youkai/internal/api"
+	"youkai/internal/config"
 	"youkai/internal/discipline"
 	"youkai/internal/engine"
 	"youkai/internal/gate"
@@ -82,27 +83,15 @@ func main() {
 		log.Printf("WARNING: %s is not set - tier-2 execution against network targets is DISABLED (approvals still record)", discipline.HighAuthKeyEnv)
 	}
 
-	// Optional planner.
-	var proposer engine.Proposer
-	llmInfo := api.LLMInfo{}
-	if pcfg, ok := planner.FromEnv(); ok && !*noPlanner {
-		pcfg.EngagementID = 0 // resolved per call by the runtime below
-		pl, err := planner.New(planner.Config{
-			BaseURL: pcfg.BaseURL, APIKey: pcfg.APIKey, Model: pcfg.Model,
-			Temperature: pcfg.Temperature, Timeout: pcfg.Timeout, MaxTokens: pcfg.MaxTokens,
-			Archive: store,
-		})
-		if err != nil {
-			log.Printf("WARNING: planner disabled: %v", err)
-		} else {
-			proposer = pl
-			info := planner.Describe(pcfg)
-			llmInfo = api.LLMInfo{
-				Enabled: true, BaseURL: info.BaseURL, Model: info.Model,
-				KeyFromEnv: info.KeyFromEnv, KeyPresent: info.KeyPresent,
-			}
-			log.Printf("planner enabled: model=%s (every call is archived)", pcfg.Model)
-		}
+	// Runtime configuration: the settings table is the UI's persistence, and the
+	// planner manager is what makes a saved model take effect without a restart.
+	settings := config.New(store.Pool(), config.PassphraseFromEnv())
+	if !settings.CanStoreSecrets() {
+		log.Printf("WARNING: no session key - the LLM panel will refuse to store a key directly; use key_from_env")
+	}
+	plannerMgr := planner.NewManager(store)
+	if *noPlanner {
+		plannerMgr.Disable()
 	}
 
 	srv, err := api.New(api.Config{
@@ -112,8 +101,8 @@ func main() {
 		Dispatcher:  dispatcher,
 		ArtifactDir: *artifacts,
 		HighAuthKey: highAuthKey,
-		LLM:         llmInfo,
-		Proposer:    proposer,
+		Settings:    settings,
+		Planner:     plannerMgr,
 		PairSource:  pairSource{dispatcher},
 		MaxSteps:    *maxSteps,
 		Logger:      log.Default(),
@@ -128,11 +117,18 @@ func main() {
 		}
 	}
 
+	// Resolve the startup LLM configuration: settings saved in the UI > environment
+	// > disabled. A bad stored config disables the planner; it never fails startup,
+	// because the deterministic loop does not depend on the model.
+	if err := srv.LoadLLM(context.Background()); err != nil {
+		log.Printf("WARNING: LLM configuration ignored: %v", err)
+	}
+
 	url := fmt.Sprintf("http://%s/#token=%s", *addr, srv.Token())
 	log.Printf("open this URL in a browser (the token is in the fragment, not the request):")
 	log.Printf("  %s", url)
 	log.Printf("provider: %s", gate.Provider().Reason())
-	log.Printf("planner: %v   high-auth: %v", llmInfo.Enabled, highAuthKey != "")
+	log.Printf("planner: %v (source=%s)   high-auth: %v", plannerMgr.Enabled(), plannerMgr.Source(), highAuthKey != "")
 	if _, err := os.Stat(*accountsPath); err == nil {
 		log.Printf("accounts: manifest %s   sessions %s", *accountsPath, *sessionDir)
 	} else {

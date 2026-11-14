@@ -105,6 +105,7 @@ $env:FAIRY_AUTH_KEY = $fairyKey
 $env:YOUKAI_SESSION_KEY = "acceptance-session-key-0123456789"
 $env:ALICE_PW = "alice-lab-password"
 $env:BOB_PW = "bob-lab-password"
+$env:ACC_LLM_KEY = "sk-acceptance-should-never-be-echoed"
 $accountsPath = Join-Path $root ".youkai\accounts-acc.json"
 $sessionsDir  = Join-Path $root ".youkai\sessions-acc"
 $token = -join ((1..32) | ForEach-Object { "{0:x}" -f (Get-Random -Maximum 16) })
@@ -391,7 +392,88 @@ try {
         Assert ($kinds3 -contains "scope-blocked") "the in-page out-of-scope fetch was blocked and recorded"
     }
 
-    # ---- 10. database-level invariants -------------------------------------
+    # ---- 10. runtime configuration: LLM API + passport editing --------------
+    Write-Host "`n== runtime config ==" -ForegroundColor Cyan
+
+    # Save a model config that references an env var (the key never touches the DB).
+    $llmBody = @{
+        enabled = $true
+        base_url = "http://127.0.0.1:$labPort"
+        model = "lab-fake-model"
+        temperature = 0.1
+        timeout_s = 20
+        max_tokens = 64
+        key_from_env = "ACC_LLM_KEY"
+        updated_by = "acceptance"
+    }
+    $r = Api "PUT" "/api/config/llm" $llmBody
+    Assert ($r.Code -eq 200) "LLM config saved (PUT /api/config/llm)"
+    Assert ($r.Body.enabled -eq $true -and $r.Body.source -eq "settings") "LLM config is live from settings"
+    Assert ($r.Body.key_present -eq $true) "the env-referenced key is reported present"
+    Assert ($r.Raw -notmatch "sk-acceptance") "the LLM key is not echoed in the save response"
+
+    $r = Api "GET" "/api/config/llm" $null
+    Assert ($r.Code -eq 200 -and $r.Body.model -eq "lab-fake-model") "LLM config reads back"
+    Assert ($r.Raw -notmatch "sk-acceptance") "the LLM key is not echoed on read"
+
+    # Connectivity test against the lab's fake chat-completions endpoint.
+    $r = Api "POST" "/api/config/llm/test" @{ base_url = "http://127.0.0.1:$labPort"; model = "lab-fake-model"; timeout_s = 10 }
+    Assert ($r.Code -eq 200 -and $r.Body.ok -eq $true) "LLM test reports a working endpoint"
+    Assert ($r.Body.latency_ms -ne $null) "LLM test reports latency"
+    Assert ($r.Raw -notmatch "pong") "the LLM test does not return model output"
+
+    # A broken endpoint reports an error, not a success.
+    $r = Api "POST" "/api/config/llm/test" @{ base_url = "http://127.0.0.1:1"; model = "x"; timeout_s = 3 }
+    Assert ($r.Code -eq 200 -and $r.Body.ok -eq $false) "LLM test reports a failing endpoint as an error"
+    Assert ($r.Body.error) "the failing test explains itself"
+
+    # A key must not have leaked into the settings row or the audit detail.
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc `
+        "SELECT coalesce(value::text,'') || coalesce(encode(secret_enc,'hex'),'') FROM settings WHERE key='llm';" 2>&1 | Out-String
+    Assert ($out -notmatch "sk-acceptance") "the settings row does not hold the key in the clear"
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc `
+        "SELECT detail::text FROM audit_log WHERE purpose='config' AND url='config:llm' ORDER BY id DESC LIMIT 1;" 2>&1 | Out-String
+    Assert ($out -match "lab-fake-model") "the LLM change is audited"
+    Assert ($out -notmatch "sk-acceptance") "the LLM audit row carries no key"
+
+    # ---- 11. passport editing ----------------------------------------------
+    $passport = @{
+        project = "config-lab"
+        include = @("127.0.0.1")
+        exclude = @("127.0.0.1:9")
+        methods = @("GET", "HEAD", "OPTIONS", "POST")
+        basis   = "self-hosted lab, passport editor acceptance"
+        operator = "acceptance"
+        allow_private = $true
+        allow_waf_probe = $true
+        allow_active_probes = $true
+        max_requests = 77
+        rps = 6
+        expires_at = (Get-Date).ToUniversalTime().AddDays(7).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+    $created2 = Api "POST" "/api/engagements" @{ name = "cfg-$((Get-Date).ToString('HHmmss'))"; scope = $passport }
+    Assert ($created2.Code -eq 201) "engagement created from a full passport form"
+    $engId2 = $created2.Body.id
+    $raw2 = $created2.Raw
+    Assert ($raw2 -match "allow_waf_probe" -and $raw2 -match "127.0.0.1:9" -and $raw2 -match "POST") "every passport field was persisted"
+
+    # The wildcard is still refused, and nothing is saved.
+    $r = Api "PUT" "/api/engagements/$engId2/scope" @{ scope = @{ include = @("*"); basis = "self-hosted lab"; operator = "x" } }
+    Assert ($r.Code -eq 400) "a top-level wildcard passport is refused (edit path)"
+
+    # Widening is allowed, and audited.
+    $widened = $passport.Clone()
+    $widened.allow_object_seeding = $true
+    $widened.max_requests = 123
+    $r = Api "PUT" "/api/engagements/$engId2/scope" @{ scope = $widened; updated_by = "acceptance" }
+    Assert ($r.Code -eq 200 -and $r.Body.changed -eq $true) "passport edit applied"
+    Assert ($r.Body.widened -eq $true) "the API reports the change as widening"
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc `
+        "SELECT detail::text FROM audit_log WHERE purpose='config' AND url='config:scope' AND engagement LIKE 'cfg-%' ORDER BY id DESC LIMIT 1;" 2>&1 | Out-String
+    Assert ($out -match "allow_object_seeding") "scope widening is audited"
+    Assert ($out -match "acceptance") "the scope audit names the operator"
+
+    # ---- 12. database-level invariants -------------------------------------
     Write-Host "`n== database guards ==" -ForegroundColor Cyan
     $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE audit_log SET status=999;" 2>&1 | Out-String
     Assert ($out -match "append-only") "audit_log refuses UPDATE at the database level"

@@ -34,5 +34,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acceptance-v02.ps1
 - **CDP 浏览器**:真实 Chrome 渲染 SPA 页(标题 + 同源 XHR),页内 `fetch` 去 out-of-scope 主机
   被 `Fetch.failRequest` 拦断并记审计;无 Chrome 时断言降级路径。
 
+- **运行时配置**:保存 LLM 配置 → 读回不含 key 明文 → 库里的 settings 行也没有 key →
+  对靶场的假 `/chat/completions` 测连通(ok + 延迟)→ 对坏端点测出 error →
+  配置变更落 `config:llm` 审计。
+- **护照编辑**:全字段建作业 → 字段都落库 → 通配符被拒 → 放宽护照落 `config:scope` 审计。
+
 本地靶场 `lab-target.py` 为此增加了 `/login`、`/orders/1`(正确受限)、
-`/orders/2`(故意 IDOR)、`/spa`(含越界 beacon)、`/api/data`、`/signup`(CAPTCHA)。
+`/orders/2`(故意 IDOR)、`/spa`(含越界 beacon)、`/api/data`、`/signup`(CAPTCHA)、
+`/chat/completions`(假的 OpenAI 兼容端点,给「测试连接」用)。

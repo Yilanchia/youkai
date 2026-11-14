@@ -201,7 +201,7 @@ function bindChrome() {
     location.reload();
   });
   $("#engagement").addEventListener("change", (e) => selectEngagement(Number(e.target.value)));
-  $("#new-engagement").addEventListener("click", newEngagementModal);
+  $("#new-engagement").addEventListener("click", () => openScopeModal("new"));
   document.querySelectorAll(".nav").forEach((btn) =>
     btn.addEventListener("click", () => setView(btn.dataset.view))
   );
@@ -652,30 +652,131 @@ async function deriveIntent(capability, args, rationale) {
     banner("派生意图失败:" + e.message);
   }
 }
-/* ---- config -------------------------------------------------------------- */
+/* ---- config: editable LLM + passport -------------------------------------- */
 
-function renderConfig(host) {
-  const cfg = state.config || {};
-  const provider = cfg.provider || {};
+async function renderConfig(host) {
+  let cfg = state.config || {};
+  try { cfg = await api("/api/config"); state.config = cfg; } catch (e) { banner("读取配置失败:" + e.message); }
+
   const llm = cfg.llm || {};
-  host.appendChild(el("div", { class: "grid2" },
-    el("div", { class: "card" },
-      el("h3", {}, "隔离墙"),
-      el("dl", { class: "kv" },
-        el("dt", {}, "利用提供者"),
-        el("dd", { class: "state " + (provider.available ? "blocked" : "verified") }, provider.reason || "—"),
-        el("dt", {}, "构建"), el("dd", { class: "mono" }, "OSS(无 youkai_full)"),
-        el("dt", {}, "high-auth"),
-        el("dd", {}, (cfg.highauth && cfg.highauth.configured) ? "已配置 " + cfg.highauth.env : "未配置 " + (cfg.highauth && cfg.highauth.env))),
-      el("p", { class: "hint" }, "档 3 不在本仓库:没有任何运行时开关能把它打开。")),
-    el("div", { class: "card" },
-      el("h3", {}, "LLM 补位规划器"),
-      el("dl", { class: "kv" },
-        el("dt", {}, "状态"), el("dd", {}, llm.enabled ? "已启用" : "未启用(确定性循环照跑)"),
-        el("dt", {}, "模型"), el("dd", { class: "mono" }, llm.model || "—"),
-        el("dt", {}, "端点"), el("dd", { class: "mono" }, llm.base_url || "—"),
-        el("dt", {}, "密钥"), el("dd", {}, llm.key_present ? "环境变量中(不回显)" : "未设置")),
-      el("p", { class: "hint" }, "密钥只从环境变量读;每次调用都会落库,可回放。"))));
+  const provider = cfg.provider || {};
+  const ha = cfg.highauth || {};
+
+  /* -------- LLM: editable -------- */
+  const enabled = el("input", { type: "checkbox" });
+  enabled.checked = !!llm.enabled;
+  const baseURL = el("input", { type: "text", placeholder: "https://api.example/v1", value: llm.base_url || "" });
+  const model = el("input", { type: "text", placeholder: "模型名,如 deepseek-chat", value: llm.model || "" });
+  const temp = el("input", { type: "text", placeholder: "0", value: String(llm.temperature ?? 0) });
+  const timeout = el("input", { type: "text", placeholder: "120", value: String(llm.timeout_s || 120) });
+  const maxTokens = el("input", { type: "text", placeholder: "1200", value: String(llm.max_tokens || 1200) });
+
+  const keyModeEnv = el("input", { type: "radio", name: "keymode", value: "env" });
+  const keyModeRaw = el("input", { type: "radio", name: "keymode", value: "raw" });
+  if (llm.key_from_env || llm.key_source) keyModeEnv.checked = true; else keyModeRaw.checked = true;
+  const envName = el("input", { type: "text", placeholder: "环境变量名,如 YOUKAI_LLM_API_KEY", value: llm.key_from_env || "" });
+  const rawKey = el("input", { type: "password", placeholder: "直接填 key(加密保存,永不回显)", autocomplete: "off" });
+
+  const saveBtn = el("button", { class: "primary" }, "保存配置");
+  const testBtn = el("button", { class: "ghost" }, "测试连接");
+  const status = el("span", { class: "hint" });
+
+  const keyLine = el("p", { class: "hint" },
+    `密钥状态:${llm.key_present ? "已配置" : "未配置"}` +
+    (llm.key_source ? ` · 来源 ${llm.key_source}` : "") +
+    (llm.can_store_secrets ? "" : " · 本站未设置会话密钥,只能使用环境变量引用"));
+
+  const collect = () => {
+    const body = {
+      enabled: enabled.checked,
+      base_url: baseURL.value.trim(),
+      model: model.value.trim(),
+      temperature: Number(temp.value || 0),
+      timeout_s: Number(timeout.value || 120),
+      max_tokens: Number(maxTokens.value || 1200),
+      updated_by: "operator",
+    };
+    if (keyModeEnv.checked) {
+      body.key_from_env = envName.value.trim();
+    } else if (rawKey.value.trim() !== "") {
+      body.key = rawKey.value.trim();
+    }
+    // An empty raw key with the "raw" mode selected and a stored secret present
+    // is left untouched: clearing is an explicit action, not a side effect.
+    return body;
+  };
+
+  saveBtn.addEventListener("click", async () => {
+    banner("");
+    try {
+      const view = await api("/api/config/llm", { method: "PUT", body: JSON.stringify(collect()) });
+      rawKey.value = "";
+      status.textContent = `已保存 · ${view.source}`;
+      banner("配置已保存并热生效(新作业使用新配置,不用重启)。", "ok");
+      await renderConfig(currentHost());
+    } catch (e) { banner("保存失败:" + e.message); }
+  });
+  testBtn.addEventListener("click", async () => {
+    banner("");
+    status.textContent = "测试中…";
+    try {
+      const r = await api("/api/config/llm/test", { method: "POST", body: JSON.stringify(collect()) });
+      if (r.ok) status.textContent = `连通正常 · ${r.latency_ms} ms`;
+      else status.textContent = "连接失败:" + (r.error || "未知错误");
+    } catch (e) { status.textContent = "测试失败:" + e.message; }
+  });
+
+  host.appendChild(el("div", { class: "card" },
+    el("h3", {}, "LLM 补位规划器"),
+    el("p", { class: "hint" },
+      "模型怎么连在这里配;保存后热生效。key 永不回显:要么引用环境变量(推荐),要么加密保存。"),
+    el("p", {}, el("label", {}, enabled, " 启用(未启用时确定性循环照跑)")),
+    el("div", { class: "field" }, el("span", { class: "label" }, "base_url"), baseURL),
+    el("div", { class: "field" }, el("span", { class: "label" }, "model"), model),
+    el("div", { class: "grid2" },
+      el("div", { class: "field" }, el("span", { class: "label" }, "temperature"), temp),
+      el("div", { class: "field" }, el("span", { class: "label" }, "timeout (秒)"), timeout),
+      el("div", { class: "field" }, el("span", { class: "label" }, "max_tokens"), maxTokens)),
+    el("p", {}, el("label", {}, keyModeEnv, " 用环境变量"), "  ", el("label", {}, keyModeRaw, " 直接填 key")),
+    el("div", { class: "field" }, el("span", { class: "label" }, "环境变量名"), envName),
+    el("div", { class: "field" }, el("span", { class: "label" }, "API key(不回显)"), rawKey),
+    keyLine,
+    el("div", { class: "actions" }, saveBtn, testBtn, status)));
+
+  /* -------- passport: current + edit -------- */
+  const scope = (state.current && state.current.scope) || {};
+  const switches = [
+    ["allow_active_probes", "主动探针(param/waf 档 2)"],
+    ["allow_waf_probe", "WAF 画像(档 2)"],
+    ["allow_object_seeding", "对象播种(档 2)"],
+    ["allow_account_provisioning", "账号注册(档 2)"],
+    ["allow_private", "私有/环回地址"],
+  ].filter(([k]) => scope[k]);
+  host.appendChild(el("div", { class: "card" },
+    el("h3", {}, "授权护照"),
+    el("dl", { class: "kv" },
+      el("dt", {}, "include"), el("dd", { class: "mono" }, (scope.include || []).join(", ") || "—"),
+      el("dt", {}, "exclude"), el("dd", { class: "mono" }, (scope.exclude || []).join(", ") || "—"),
+      el("dt", {}, "methods"), el("dd", { class: "mono" }, (scope.methods || []).join(", ") || "—"),
+      el("dt", {}, "放开的开关"), el("dd", {}, switches.map(([, label]) => label).join(" · ") || "无(全只读)"),
+      el("dt", {}, "请求预算"), el("dd", { class: "mono" }, String(scope.max_requests || "—")),
+      el("dt", {}, "限速 rps"), el("dd", { class: "mono" }, String(scope.rps || "—")),
+      el("dt", {}, "过期"), el("dd", { class: "mono" }, scope.expires_at || "—"),
+      el("dt", {}, "授权依据"), el("dd", {}, scope.basis || "—")),
+    el("div", { class: "actions" },
+      el("button", { class: "ghost", onclick: () => openScopeModal("edit") }, "编辑护照…"),
+      el("button", { class: "ghost", onclick: () => openScopeModal("new") }, "+ 新建作业…")),
+    el("p", { class: "hint" }, "放宽护照(加目标/加写方法/开档 2 开关)会写一条审计;它改变的是「能看哪里」,不是「能做什么」。")));
+
+  /* -------- the wall: read-only, no switches -------- */
+  host.appendChild(el("div", { class: "card" },
+    el("h3", {}, "隔离墙(只读)"),
+    el("dl", { class: "kv" },
+      el("dt", {}, "利用提供者"),
+      el("dd", { class: "state " + (provider.available ? "blocked" : "verified") }, provider.reason || "—"),
+      el("dt", {}, "构建"), el("dd", {}, "OSS(无 youkai_full)"),
+      el("dt", {}, "high-auth"), el("dd", {}, ha.configured ? "已配置 " + ha.env : "未配置 " + ha.env)),
+    el("p", { class: "hint" }, "这不是可配项:档 3 不在本仓库,档 2 永远要人批。配置面碰不到它们。")));
 
   const tiers = cfg.tiers || {};
   const rows = (tiers.read_only || []).map((c) => [c, "tier 1 · 自治"]);
@@ -684,7 +785,111 @@ function renderConfig(host) {
   host.appendChild(simpleTable(["capability", "档位"], rows));
 }
 
-/* ---- audit --------------------------------------------------------------- */
+function currentHost() { return document.querySelector("#view"); }
+
+/* ---- passport editor (new + edit) ---------------------------------------- */
+
+function openScopeModal(mode) {
+  const editing = mode === "edit" && state.current;
+  const scope = (editing && state.current.scope) || {};
+  const name = el("input", { type: "text", placeholder: "作业名,如 lab-demo", value: editing ? state.current.name : "" });
+  const include = el("input", { type: "text", placeholder: "127.0.0.1:8080, https://lab.example", value: (scope.include || []).join(", ") });
+  const exclude = el("input", { type: "text", placeholder: "admin.lab.example(排除优先)", value: (scope.exclude || []).join(", ") });
+  const basis = el("input", { type: "text", placeholder: "授权依据(≥8 字)", value: scope.basis || "" });
+  const operator = el("input", { type: "text", placeholder: "操作员", value: scope.operator || "operator" });
+  const maxReq = el("input", { type: "text", placeholder: "2000", value: String(scope.max_requests || 2000) });
+  const rps = el("input", { type: "text", placeholder: "5", value: String(scope.rps || 5) });
+  const expires = el("input", { type: "text", placeholder: "2026-12-31T00:00:00Z", value: scope.expires_at || "" });
+
+  const methodList = ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"];
+  const methodBoxes = {};
+  for (const m of methodList) {
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = (scope.methods || ["GET", "HEAD", "OPTIONS"]).includes(m);
+    methodBoxes[m] = cb;
+  }
+
+  const switchDefs = [
+    ["allow_private", "私有/环回地址(自建靶场)"],
+    ["allow_active_probes", "主动探针 param/waf(档 2)"],
+    ["allow_waf_probe", "WAF 画像(档 2)"],
+    ["allow_object_seeding", "对象播种(档 2)"],
+    ["allow_account_provisioning", "账号注册(档 2)"],
+  ];
+  const switchBoxes = {};
+  for (const [k] of switchDefs) {
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = !!scope[k];
+    switchBoxes[k] = cb;
+  }
+
+  const writeMethodWarn = el("p", { class: "hint" },
+    "勾选写方法或档 2 开关只是「允许 it 发生」:param/waf/登录/播种仍然停在审批台,一步一批。");
+
+  const save = el("button", { class: "primary" }, editing ? "保存护照" : "创建作业");
+  save.addEventListener("click", async () => {
+    banner("");
+    const body = {
+      project: (include.value.split(",")[0] || "").trim(),
+      include: include.value.split(",").map((s) => s.trim()).filter(Boolean),
+      exclude: exclude.value.split(",").map((s) => s.trim()).filter(Boolean),
+      methods: methodList.filter((m) => methodBoxes[m].checked),
+      basis: basis.value.trim(),
+      operator: operator.value.trim(),
+      max_requests: Number(maxReq.value || 2000),
+      rps: Number(rps.value || 5),
+      expires_at: normExpiry(expires.value),
+    };
+    for (const [k] of switchDefs) body[k] = switchBoxes[k].checked;
+    try {
+      if (editing) {
+        await api(`/api/engagements/${state.current.id}/scope`, {
+          method: "PUT",
+          body: JSON.stringify({ scope: body, updated_by: operator.value.trim() || "operator" }),
+        });
+      } else {
+        await api("/api/engagements", {
+          method: "POST",
+          body: JSON.stringify({ name: name.value.trim(), scope: body }),
+        });
+      }
+      closeModal();
+      await loadEngagements();
+      banner(editing ? "护照已更新并记入审计。" : "作业已创建。", "ok");
+    } catch (e) {
+      banner("保存失败:" + e.message);
+    }
+  });
+
+  openModal(
+    el("h3", {}, editing ? "编辑授权护照" : "新建作业"),
+    el("p", { class: "muted" }, "护照决定 youkai 能看哪里。非法护照(空 include / * / *.tld / basis 太短 / 已过期)会被拒绝保存。"),
+    editing ? null : el("div", { class: "field" }, el("span", { class: "label" }, "名称"), name),
+    el("div", { class: "field" }, el("span", { class: "label" }, "include(授权目标)"), include),
+    el("div", { class: "field" }, el("span", { class: "label" }, "exclude(排除优先)"), exclude),
+    el("div", { class: "field" }, el("span", { class: "label" }, "methods"), el("div", { class: "row" },
+      ...methodList.map((m) => el("label", {}, methodBoxes[m], " " + m)))),
+    el("div", { class: "field" }, el("span", { class: "label" }, "档 2 开关"), el("div", {},
+      ...switchDefs.map(([k, label]) => el("label", { style: "display:block" }, switchBoxes[k], " " + label)))),
+    writeMethodWarn,
+    el("div", { class: "grid2" },
+      el("div", { class: "field" }, el("span", { class: "label" }, "请求预算"), maxReq),
+      el("div", { class: "field" }, el("span", { class: "label" }, "限速 rps"), rps),
+      el("div", { class: "field" }, el("span", { class: "label" }, "过期(RFC3339)"), expires)),
+    el("div", { class: "field" }, el("span", { class: "label" }, "授权依据"), basis),
+    el("div", { class: "field" }, el("span", { class: "label" }, "操作员"), operator),
+    el("div", { class: "actions" }, save, el("button", { class: "ghost", onclick: closeModal }, "取消")));
+}
+
+// normExpiry turns a UI datetime into RFC3339; empty stays empty (server default).
+function normExpiry(v) {
+  const raw = (v || "").trim();
+  if (!raw) return "";
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return raw; // let the server reject it with a clear message
+  return d.toISOString();
+}
+
 
 function renderAudit(host) {
   if (!state.audit.length) {
@@ -707,47 +912,5 @@ function renderAudit(host) {
   host.appendChild(el("p", { class: "hint" }, "审计表在数据库层是 append-only:UPDATE / DELETE 会被触发器拒绝。"));
 }
 
-/* ---- new engagement ------------------------------------------------------ */
-
-function newEngagementModal() {
-  const name = el("input", { type: "text", placeholder: "作业名 (例如 lab-demo)" });
-  const include = el("input", { type: "text", placeholder: "授权目标: 127.0.0.1:8080, https://lab.invalid" });
-  const basis = el("input", { type: "text", placeholder: "授权依据(≥8 字,自建靶场/授权书号)" });
-  const operator = el("input", { type: "text", placeholder: "操作员" });
-  const priv = el("input", { type: "checkbox" });
-  openModal(
-    el("h3", {}, "新建作业"),
-    el("p", { class: "muted" }, "作业绑定一份授权护照。没有护照,youkai 一个请求都不会发。"),
-    el("div", { class: "field" }, el("span", { class: "label" }, "名称"), name),
-    el("div", { class: "field" }, el("span", { class: "label" }, "授权目标"), include),
-    el("div", { class: "field" }, el("span", { class: "label" }, "授权依据"), basis),
-    el("div", { class: "field" }, el("span", { class: "label" }, "操作员"), operator),
-    el("p", {}, el("label", {}, priv, " 允许私有/环回地址(仅自建靶场)")),
-    el("div", { class: "actions" },
-      el("button", { class: "primary", onclick: async () => {
-        banner("");
-        try {
-          const scope = {
-            project: name.value.trim(),
-            include: include.value.split(",").map((s) => s.trim()).filter(Boolean),
-            basis: basis.value.trim(),
-            operator: operator.value.trim(),
-            allow_private: priv.checked,
-            methods: ["GET", "HEAD", "OPTIONS"],
-          };
-          const e = await api("/api/engagements", {
-            method: "POST",
-            body: JSON.stringify({ name: name.value.trim(), scope }),
-          });
-          closeModal();
-          await loadEngagements();
-          await selectEngagement(e.id);
-          banner("作业已创建。可以先跑一轮只读,再看它在哪儿停下。", "ok");
-        } catch (err) { banner("创建失败:" + err.message); }
-      } }, "创建"),
-      el("button", { class: "ghost", onclick: closeModal }, "取消")));
-}
-
-/* ---- boot ---------------------------------------------------------------- */
 
 boot();

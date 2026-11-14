@@ -22,10 +22,12 @@ import (
 	"time"
 
 	"youkai/internal/accounts"
+	"youkai/internal/config"
 	"youkai/internal/discipline"
 	"youkai/internal/engine"
 	"youkai/internal/gate"
 	"youkai/internal/ledger"
+	"youkai/internal/planner"
 )
 
 // Config configures the server.
@@ -43,8 +45,11 @@ type Config struct {
 	// HighAuthKey is the FAIRY_AUTH_KEY used to *verify* high-auth records.
 	// Empty means tier-2 execution is disabled (approval still works).
 	HighAuthKey string
-	// LLM describes the optional planner for the config panel (never the key).
-	LLM LLMInfo
+	// Settings persists runtime configuration (LLM API). Optional: without it the
+	// LLM panel is read-only and environment-only.
+	Settings *config.Store
+	// Planner is the hot-swappable LLM planner.
+	Planner *planner.Manager
 	// Proposer is the optional LLM planner (proposal only).
 	Proposer engine.Proposer
 	// PairSource supplies declared ownership (the account layer) so the engine can
@@ -232,6 +237,8 @@ func (s *Server) routes() {
 	m := s.mux
 	m.HandleFunc("/api/health", s.handleHealth)
 	m.HandleFunc("/api/config", s.handleConfig)
+	m.HandleFunc("/api/config/llm", s.handleLLMConfig)
+	m.HandleFunc("/api/config/llm/test", s.handleLLMTest)
 	m.HandleFunc("/api/engagements", s.handleEngagements)
 	m.HandleFunc("/api/engagements/", s.handleEngagementScoped)
 
@@ -251,15 +258,16 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"uptime_s":    int(time.Since(s.started).Seconds()),
 		"provider":    gate.Provider().Reason(),
 		"highauth":    s.cfg.HighAuthKey != "",
-		"planner":     s.cfg.LLM.Enabled,
+		"planner":     s.proposer() != nil,
 		"artifactdir": s.cfg.ArtifactDir,
 	})
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	llm, _ := s.llmView(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version": Version,
-		"llm":     s.cfg.LLM,
+		"llm":     llm,
 		"provider": map[string]any{
 			"available": gate.Provider().Available(),
 			"reason":    gate.Provider().Reason(),
@@ -296,13 +304,16 @@ func (s *Server) handleEngagements(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Validate the scope by loading it as a passport; an unusable passport
-		// must not reach the database.
+		// must not reach the database. NewScope fills the safe defaults (read-only
+		// method set, rate limit, budget, body cap) so a partial form from the UI
+		// cannot accidentally produce an unrestricted passport.
 		var sc discipline.Scope
 		if len(body.Scope) > 0 {
 			if err := json.Unmarshal(body.Scope, &sc); err != nil {
 				writeErr(w, http.StatusBadRequest, "scope: %v", err)
 				return
 			}
+			sc = *discipline.NewScope(sc)
 			if err := sc.Validate(); err != nil {
 				writeErr(w, http.StatusBadRequest, "scope: %v", err)
 				return
@@ -362,6 +373,8 @@ func (s *Server) handleEngagementScoped(w http.ResponseWriter, r *http.Request) 
 		s.handleFindings(w, r, eng, tail[1:])
 	case len(tail) >= 1 && tail[0] == "report":
 		s.handleReport(w, r, eng)
+	case len(tail) >= 1 && tail[0] == "scope":
+		s.handleScope(w, r, eng)
 	case len(tail) >= 1 && tail[0] == "accounts":
 		s.handleAccounts(w, r, eng)
 	case len(tail) >= 1 && tail[0] == "audit":
@@ -481,7 +494,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request, eng ledger.Eng
 			MaxSteps:     maxSteps,
 			SeedURLs:     body.SeedURLs,
 			AllowedTools: gate.ReadOnlyCapabilities(),
-			Proposer:     s.cfg.Proposer,
+			Proposer:     s.proposer(),
 			PairSource:   s.cfg.PairSource,
 		})
 		if nerr != nil {
@@ -681,3 +694,18 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, eng ledg
 	}
 	writeJSON(w, http.StatusOK, view)
 }
+
+// proposer returns the LLM proposer to install in a run, or nil when disabled.
+//
+// The engine treats a nil proposer as "no LLM": the deterministic loop is the
+// baseline, and the model is an optional supplement. A mid-run disable therefore
+// degrades to "no extra proposals", never to a crash.
+func (s *Server) proposer() engine.Proposer {
+	if s.cfg.Planner == nil || !s.cfg.Planner.Enabled() {
+		return nil
+	}
+	return s.cfg.Planner
+}
+
+// LoadLLM resolves the startup LLM configuration: settings > environment > disabled.
+func (s *Server) LoadLLM(ctx context.Context) error { return s.installLLMFromStore(ctx) }

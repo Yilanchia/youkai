@@ -1,9 +1,6 @@
 package accounts
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -13,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/scrypt"
+	"youkai/internal/secretbox"
 )
 
 // Sessions are the most sensitive artefact youkai holds: a live login for a test
@@ -129,32 +126,22 @@ func (s *SessionStore) Save(name string, headers map[string]string, note string)
 
 	rec := sessionRecord{Schema: SessionSchema, Name: name, UpdatedAt: Now()}
 	if s.keyed() {
-		salt := make([]byte, 16)
-		iv := make([]byte, 12)
-		if _, err := rand.Read(salt); err != nil {
-			return SessionInfo{}, err
-		}
-		if _, err := rand.Read(iv); err != nil {
-			return SessionInfo{}, err
-		}
-		key, err := scrypt.Key(s.key, salt, 1<<14, 8, 1, 32)
+		// One crypto construction platform-wide (internal/secretbox); the record
+		// keeps salt/iv/tag/data as separate fields so existing session files stay
+		// readable.
+		sealed, err := secretbox.Seal(s.key, body, []byte(name))
 		if err != nil {
-			return SessionInfo{}, err
+			return SessionInfo{}, fmt.Errorf("accounts: 会话加密失败: %w", err)
 		}
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			return SessionInfo{}, err
+		tagLen := 16
+		if len(sealed.Ciphertext) < tagLen {
+			return SessionInfo{}, fmt.Errorf("accounts: 会话加密结果异常")
 		}
-		gcm, err := cipher.NewGCM(block)
-		if err != nil {
-			return SessionInfo{}, err
-		}
-		sealed := gcm.Seal(nil, iv, body, []byte(name))
 		rec.Enc = "aes-256-gcm"
-		rec.Salt = base64.StdEncoding.EncodeToString(salt)
-		rec.IV = base64.StdEncoding.EncodeToString(iv)
-		rec.Tag = base64.StdEncoding.EncodeToString(sealed[len(sealed)-gcm.Overhead():])
-		rec.Data = base64.StdEncoding.EncodeToString(sealed[:len(sealed)-gcm.Overhead()])
+		rec.Salt = base64.StdEncoding.EncodeToString(sealed.Salt)
+		rec.IV = base64.StdEncoding.EncodeToString(sealed.Nonce)
+		rec.Tag = base64.StdEncoding.EncodeToString(sealed.Ciphertext[len(sealed.Ciphertext)-tagLen:])
+		rec.Data = base64.StdEncoding.EncodeToString(sealed.Ciphertext[:len(sealed.Ciphertext)-tagLen])
 	} else {
 		rec.Enc = "none"
 		rec.Data = base64.StdEncoding.EncodeToString(body)
@@ -206,19 +193,9 @@ func (s *SessionStore) Load(name string) (Session, error) {
 		if err := firstErr(err1, err2, err3, err4); err != nil {
 			return Session{}, fmt.Errorf("accounts: session %q 已损坏: %w", name, err)
 		}
-		key, err := scrypt.Key(s.key, salt, 1<<14, 8, 1, 32)
-		if err != nil {
-			return Session{}, err
-		}
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			return Session{}, err
-		}
-		gcm, err := cipher.NewGCM(block)
-		if err != nil {
-			return Session{}, err
-		}
-		plain, err := gcm.Open(nil, iv, append(data, tag...), []byte(name))
+		plain, err := secretbox.Open(s.key, secretbox.Sealed{
+			Salt: salt, Nonce: iv, Ciphertext: append(data, tag...),
+		}, []byte(name))
 		if err != nil {
 			return Session{}, fmt.Errorf("accounts: session %q 解密失败:密钥不对或文件被改动", name)
 		}

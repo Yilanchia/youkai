@@ -215,3 +215,15 @@ DROP TRIGGER IF EXISTS intents_approval_guard_trg ON intents;
 CREATE TRIGGER intents_approval_guard_trg
   BEFORE UPDATE ON intents
   FOR EACH ROW EXECUTE FUNCTION youkai_intents_approval_guard();
+
+-- Runtime configuration (DEVPLAN-v0.4). Non-secret fields live in `value`; a
+-- secret (e.g. the LLM API key) goes into `secret_enc` as an AES-256-GCM blob and
+-- is never returned by the read API. Configured here so the UI can change how the
+-- platform connects to a model without a restart.
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  secret_enc BYTEA,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by TEXT NOT NULL DEFAULT ''
+);

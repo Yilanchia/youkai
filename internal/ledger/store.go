@@ -2,7 +2,9 @@ package ledger
 
 import (
 	"context"
+	"crypto/rand"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,29 +65,59 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 // database (e.g. parallel `go test` packages sharing YOUKAI_TEST_DSN) can't
 // deadlock on catalog locks.
 func (s *Store) Migrate(ctx context.Context) error {
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("ledger: migrate: acquire: %w", err)
-	}
-	defer conn.Release()
-	pg := conn.Conn().PgConn()
-	// Advisory lock key is the ASCII of "youkai"; any fixed constant works, it
-	// only has to be the same across every migrator.
+	// Migrating is idempotent DDL, but "idempotent" is not "concurrency-safe":
+	// CREATE INDEX takes a lock that conflicts with the row locks a parallel test
+	// package holds, and PostgreSQL can pick either side as the deadlock victim.
+	// So: serialise on an advisory lock, and retry the loser instead of failing the
+	// caller. The lock key is a fixed constant shared by every migrator.
 	const migrateLock = "SELECT pg_advisory_lock(133467618586473)"
 	const migrateUnlock = "SELECT pg_advisory_unlock(133467618586473)"
-	if _, err := pg.Exec(ctx, migrateLock).ReadAll(); err != nil {
-		return fmt.Errorf("ledger: migrate: lock: %w", err)
-	}
-	defer func() {
+
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		conn, err := s.pool.Acquire(ctx)
+		if err != nil {
+			return fmt.Errorf("ledger: migrate: acquire: %w", err)
+		}
+		pg := conn.Conn().PgConn()
+		if _, err := pg.Exec(ctx, migrateLock).ReadAll(); err != nil {
+			conn.Release()
+			return fmt.Errorf("ledger: migrate: lock: %w", err)
+		}
+		// PgConn.Exec speaks the simple protocol, which multi-statement DDL
+		// (including $$ function bodies) needs.
+		_, execErr := pg.Exec(ctx, schemaSQL).ReadAll()
 		// Release on a fresh context so the unlock still runs if ctx was cancelled.
 		_, _ = pg.Exec(context.Background(), migrateUnlock).ReadAll()
-	}()
-	// PgConn.Exec speaks the simple protocol, which is what multi-statement
-	// DDL (including $$ function bodies) needs.
-	if _, err := pg.Exec(ctx, schemaSQL).ReadAll(); err != nil {
-		return fmt.Errorf("ledger: migrate: %w", err)
+		conn.Release()
+		if execErr == nil {
+			return nil
+		}
+		lastErr = execErr
+		if !isRetryableMigrationError(execErr) {
+			break
+		}
+		select {
+		case <-time.After(time.Duration(50*(attempt+1)) * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	return nil
+	return fmt.Errorf("ledger: migrate: %w", lastErr)
+}
+
+// isRetryableMigrationError matches the transient conflicts that a parallel
+// migrator can lose (deadlock, serialization failure, lock timeout).
+func isRetryableMigrationError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	switch pgErr.Code {
+	case "40P01", "40001", "55P03": // deadlock_detected, serialization_failure, lock_not_available
+		return true
+	}
+	return false
 }
 
 // ---- engagements -----------------------------------------------------------
@@ -998,4 +1030,58 @@ func nonNilIDs(s []int64) []int64 {
 		return []int64{}
 	}
 	return s
+}
+
+// UpdateScope replaces an engagement's passport.
+//
+// The caller validates it first; this only persists. Scope changes are
+// security-relevant, so the API records an audit row alongside.
+func (s *Store) UpdateScope(ctx context.Context, id int64, scope any) (Engagement, error) {
+	raw, err := json.Marshal(scope)
+	if err != nil {
+		return Engagement{}, fmt.Errorf("ledger: encode scope: %w", err)
+	}
+	var e Engagement
+	err = s.pool.QueryRow(ctx, `
+		UPDATE engagements SET scope = $2 WHERE id = $1
+		RETURNING id, name, scope, created_at`, id, raw).
+		Scan(&e.ID, &e.Name, &e.Scope, &e.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Engagement{}, ErrNotFound
+	}
+	if err != nil {
+		return Engagement{}, err
+	}
+	return e, nil
+}
+
+// RecordConfigChange appends a configuration change to the audit trail.
+//
+// It reuses audit_log (append-only, trigger-protected) with method "CONFIG" so a
+// boundary change is as durable as a request. The detail nails who changed what,
+// before and after; secrets must never be passed in here.
+func (s *Store) RecordConfigChange(ctx context.Context, engagement, operator, what string, before, after any) error {
+	if strings.TrimSpace(engagement) == "" {
+		engagement = "*"
+	}
+	b, err := json.Marshal(map[string]any{
+		"operator": operator,
+		"what":     what,
+		"before":   before,
+		"after":    after,
+	})
+	if err != nil {
+		return fmt.Errorf("ledger: encode config change: %w", err)
+	}
+	var n [2]byte
+	_, _ = rand.Read(n[:])
+	requestID := fmt.Sprintf("CFG-%04x%s", time.Now().UnixNano()%0x10000, hex.EncodeToString(n[:]))
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO audit_log (engagement, request_id, ts, method, url, host, status, bytes, verdict, reason, purpose, duration_ms, detail)
+		VALUES ($1,$2,now(),'CONFIG',$3,'',$4,0,'allowed',$5,'config',$6,$7)`,
+		engagement, requestID, "config:"+what, 200, "configuration change by "+operator, 0, b)
+	if err != nil {
+		return fmt.Errorf("ledger: audit config change: %w", err)
+	}
+	return nil
 }

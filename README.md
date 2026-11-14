@@ -133,6 +133,12 @@ $env:ALICE_PW          = "<测试账号密码;清单里只写 password_env 的�
 
 ## 配置参考
 
+### 优先级:**UI 保存的配置 > 环境变量 > 禁用**
+
+模型怎么连、护照到哪,都可以在控制台的「配置」面板里改,**保存即热生效**(不用重启)。
+配置文件存在 PostgreSQL 的 `settings` 表;LLM 的 API key 要么引用环境变量(推荐,不落库),
+要么加密存进 `secret_enc`(需 `YOUKAI_SESSION_KEY`,否则拒绝保存 —— 不会退化成明文)。
+
 **环境变量**(也都有同名 CLI flag,flag 优先):
 
 | 变量 | 作用 | 默认 |
@@ -144,12 +150,36 @@ $env:ALICE_PW          = "<测试账号密码;清单里只写 password_env 的�
 | `YOUKAI_SESSIONS` | 加密会话目录 | `.youkai/sessions` |
 | `YOUKAI_TOKEN` / `YOUKAI_TOKEN_FILE` | API 令牌 / 令牌落盘路径(0600) | 留空则自动生成 |
 | `FAIRY_AUTH_KEY` | high-auth 记录**验签**密钥(只验不签) | 不设 → 档 2 网络执行禁用 |
-| `YOUKAI_SESSION_KEY`(兼容 `FAIRY_SESSION_KEY`) | 会话 AES-256-GCM 加密 | 不设 → base64 + 告警 |
-| `YOUKAI_LLM_BASE_URL/API_KEY/MODEL` | LLM planner(可选补位) | 不设 → 确定性循环照跑 |
-| `VERDEX_GHIDRA` / `YOUKAI_BROWSER` | 反编译后端 / 浏览器可执行文件覆盖 | 自动探测 |
+| `YOUKAI_SESSION_KEY`(兼容 `FAIRY_SESSION_KEY`) | 会话与 secret 的 AES-256-GCM 加密 | 不设 → 会话 base64+告警;直填 LLM key 被拒 |
+| `YOUKAI_LLM_BASE_URL/API_KEY/MODEL` | LLM planner 的环境变量来源(可选补位) | 不设 → 确定性循环照跑 |
 
 **CLI flags**:`-addr -dsn -artifacts -accounts -sessions -max-steps -token -token-file -no-planner`。
 
+### LLM 配置(UI 可编辑)
+
+| 字段 | 说明 |
+|---|---|
+| `enabled` | 关掉也不影响确定性循环(LLM 只是补位) |
+| `base_url` / `model` | 必填才能启用;base_url 必须是 http(s) |
+| `temperature` / `timeout_s` / `max_tokens` | 默认 0 / 120 / 1200,可调 |
+| `key_from_env` | 只存**环境变量名**,key 不落库(推荐) |
+| `key` | 直接填则加密存库;响应里永远只回 `key_present` |
+
+- `GET /api/config/llm` 只看状态(无 key 明文);`PUT` 保存并热替换;`POST /api/config/llm/test`
+  发一次最小 completion,只回 `{ok, latency_ms, error}`,**不回模型输出、不写账本**。
+- 每次保存都写一条 `audit_log`(`method=CONFIG`, `url=config:llm`),detail 只有旋钮、没有 key。
+
+### 护照(scope)字段
+
+`include[]`(必填)、`exclude[]`(排除优先)、`methods[]`(默认 `GET/HEAD/OPTIONS`)、
+`allow_private`、`allow_active_probes`(解锁 param/waf 档 2)、`allow_waf_probe`、
+`allow_object_seeding`、`allow_account_provisioning`、`max_requests`、`rps`、`expires_at`、
+`basis`(≥8 字)、`operator`。
+
+- 非法护照(空 include / `*` / `*.tld` / basis 太短 / 已过期)在保存时被拒,错误回显。
+- **放宽护照**(加目标 / 加写方法 / 开档 2 开关)会写一条 `config:scope` 审计;
+  它改变的是"能看哪里",不是"能做什么"—— 档 2 仍要人批,档 3 仍不存在。
+- 开写方法/档 2 开关只是"允许它发生",能力本身仍停在审批台。
 ## 一次典型作业
 
 1. **建作业(engagement)+ scope 护照**:给出授权目标(include/exclude、允许方法、速率、请求预算、过期)。
@@ -173,10 +203,12 @@ $env:ALICE_PW          = "<测试账号密码;清单里只写 password_env 的�
 - **证据 · 报告** — 账本投影出的跨能力报告 + 四样证据。
 - **任务台** — 建 / 看 / 停作业,看停止点。
 - **探索图** — goal/fact/finding/hint 血缘,只读。
-- **配置 · 墙** — LLM 配置(key 只存环境变量引用)、档位墙状态、手的后端预检。
+- **配置 · 墙** — LLM 配置(**可编辑**:base_url/model/温度/超时/key 来源/连通测试)、护照编辑器(全部旋钮)、
+  只读的档位墙状态。墙不是可配项,面板里没有任何开关能碰它。
 - **审计日志** — 逐请求 + 逐审批,只读。
 
-API 面(都在 `127.0.0.1`,需令牌 + 同源):`/api/health`、`/api/config`、`/api/engagements`、`/api/engagements/<id>/…`。
+API 面(都在 `127.0.0.1`,需令牌 + 同源):`/api/health`、`/api/config`、`/api/config/llm`(GET/PUT)、
+`/api/config/llm/test`(POST)、`/api/engagements`、`/api/engagements/<id>/…`、`PUT /api/engagements/<id>/scope`。
 
 ## 能力清单
 
