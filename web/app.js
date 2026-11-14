@@ -519,6 +519,9 @@ async function renderEvidence(host) {
         el("span", { class: "state " + f.state }, f.state),
         f.disclosable ? el("span", { class: "tag ok" }, "可披露") : null),
       el("p", { class: "mono" }, "位置:" + short(f.where, 300)),
+      (f.evidence && f.evidence.session)
+        ? el("p", { class: "hint" }, "会话:" + f.evidence.session + (f.evidence.owner ? " · 对象属于 " + f.evidence.owner : ""))
+        : null,
       four,
       f.detail ? el("p", { class: "muted" }, f.detail) : null,
       (f.incomplete || []).length
@@ -712,6 +715,26 @@ async function renderAccounts(host) {
   host.appendChild(el("p", { class: "hint" },
     "派生出来的档 2 意图会停在审批台,需要你逐条批准(并且登录/播种还要求 scope 里对应的开关)。"));
 
+  // Render a page as one of these identities. The form never holds a
+  // credential: it names a session, and the dispatcher attaches the cookie
+  // inside the Fetch gate, only for that identity's own host.
+  const renderURL = el("input", { type: "text", placeholder: "要以某个身份渲染的 URL" });
+  const renderSession = el("select", {},
+    el("option", { value: "" }, "匿名(不带会话)"),
+    ...accounts.map((a) => el("option", { value: a.name }, a.name)));
+  host.appendChild(el("div", { class: "card" },
+    el("h3", {}, "以会话渲染"),
+    el("p", { class: "hint" },
+      "档 1 只读渲染。会话 header 在 Fetch 闸内、按 host 注入到已被 guard 放行的请求上;账本只记会话名。"),
+    el("div", { class: "actions" }, renderURL, renderSession,
+      el("button", { class: "ghost", onclick: () => {
+        const url = renderURL.value.trim();
+        if (!url) return banner("先填要渲染的 URL");
+        const intentArgs = { url };
+        if (renderSession.value) intentArgs.session = renderSession.value;
+        deriveIntent("browser", intentArgs,
+          renderSession.value ? "以已登录身份 " + renderSession.value + " 只读渲染" : "匿名只读渲染");
+      } }, "派生 browser 意图(只读)"))));
   host.appendChild(el("div", { class: "sec" }, `BOLA 配对 (${pairs.length})`));
   if (!pairs.length) {
     host.appendChild(el("div", { class: "empty" }, "还没有归属关系,所以没有可比的配对。"));

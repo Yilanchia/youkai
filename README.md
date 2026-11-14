@@ -258,8 +258,19 @@ Chrome 自己开 socket,所以这里不是让 youkai 绕过脊柱,而是把浏�
 Fetch 门管辖的 CDP 会话 —— 那就是未受闸出口。"无未闸请求"是绝对不变量,不是尽力而为,所以此时 youkai **直接拒绝渲染**
 (fail-closed),而不是带着缺口往下跑。唯一的原始 socket(CDP 握手)锁死 loopback,且被 `TestNoEgressOutsideTheGuard` 静态盯住。
 
-当前限制:浏览器**暂不注入已存会话**(`session` 还没接到 CDP `Network.setCookie`),所以只做匿名渲染 + 闸门;
-登录态多身份浏览器是下一步。无 Chrome/Edge → `ErrUnavailable` + 明确原因,不伪造。
+**登录态渲染(`session` 参数)**:会话值**不进意图、不进图** —— 意图只记 `session: "alice"`,派发时由 runtime 从加密
+会话库取出 header,浏览器在 `Fetch.continueRequest` 时把它合进**已经被 guard 放行的那一个请求**上:
+
+- **不用 `Network.setCookie`** —— 那会让 Chrome 自带 cookie 自由发包,等于开第二条出口;
+- **按 host 收敛** —— 只有请求 host 与该身份的 host 相同才注入;跨 host(即使仍在 scope 内)不注入,
+  防止把 A 站 cookie 漏给 B 站;
+- **会话值零泄漏** —— 账本 / 审计 / 报告 / 截图旁注里只有会话**名**;cookie 值只在该次渲染的内存里存在;
+- **会话不可用即失败** —— 名字不存在、解密失败、header 为空 → 能力报错,绝不退化成匿名偷偷跑。
+
+越权视角:以 `bob` 渲染 `alice` 声明归属的对象页,若页面出现该对象的标记 → `bola` 候选(仍 candidate,
+不自动 verified),证据只到 request_id + 会话名 + 标记。
+
+无 Chrome/Edge → `ErrUnavailable` + 明确原因,不伪造。
 
 ## 证据与披露(Proof-Carrying Pentest)
 
@@ -301,7 +312,7 @@ go test ./...       # 全绿(默认并行;migrate 用会话 advisory lock 串行
 
 `scripts/acceptance-v02.ps1` 把这些连同一轮真机只读链、档 2 双条件(含 high-auth 缺失返 428)、
 账号层 provision/seed、浏览器越界拦断、报告生成,全部做成可重放断言(独立数据库、独立 workspace,不污染真实账本)。
-逐模块证据见 [docs/IMPL-STATUS-v0.5.md](docs/IMPL-STATUS-v0.5.md)(v0.3 账号层/浏览器、v0.4 配置面、v0.5 证据闭环)。
+逐模块证据见 [docs/IMPL-STATUS-v0.6.md](docs/IMPL-STATUS-v0.6.md)(v0.3 账号层/浏览器、v0.4 配置面、v0.5 证据闭环、v0.6 登录态浏览器)。
 
 ## 设计取舍与未做
 
@@ -311,7 +322,7 @@ go test ./...       # 全绿(默认并行;migrate 用会话 advisory lock 串行
 写不成就丢弃响应并报错。
 
 **未做 / 路线图**:
-- 浏览器注入已存会话(`Network.setCookie`)→ 登录态 SPA/DOM 流。
+- 登录态浏览器已落地(v0.6);仍缺:多步注册的邮件验证 UI 入口、watch 模式。
 - `accounts_register` 的邮件多步验证 UI 入口(现在只能经能力参数传 `verification_url`)。
 - worker trace 的跨轮检索 / 复用。
 - 多用户 / RBAC:按 ADR-003 v1 不做,只本机单操作员 + 本地令牌 + Origin 校验。

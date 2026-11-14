@@ -57,6 +57,16 @@ type Env struct {
 	// ArtifactDir holds non-secret artefacts: browser profiles and screenshots.
 	// It is never used for response bodies.
 	ArtifactDir string
+	// SessionName / SessionHeaders / SessionHost carry a resolved identity for the
+	// browser. They are set by the dispatcher at dispatch time and never stored in
+	// the graph: the intent records the NAME, the credential exists only in memory
+	// for the duration of one render.
+	SessionName    string
+	SessionHeaders map[string]string
+	SessionHost    string
+	// SessionWatch lists ownership pairs where this identity is the viewer. If the
+	// rendered page shows one of those markers, the render is evidence of BOLA.
+	SessionWatch []MarkerWatch
 }
 
 // Capability is one registered web capability.
@@ -147,4 +157,12 @@ func newCapability(name, description string, run func(context.Context, *Env, map
 		Tier:        gate.Classify(name, nil),
 		Run:         run,
 	}
+}
+
+// MarkerWatch is one "this identity should NOT see that marker" check, derived from
+// declared ownership.
+type MarkerWatch struct {
+	Owner  string
+	Marker string
+	URL    string
 }

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,8 @@ type browserSession struct {
 	allowed  []string // request ids that were authorised
 	blocked  []blockedRequest
 	requests []browserRequest
+	// injected counts the requests that carried the session credential.
+	injected int
 }
 
 type browserRequest struct {
@@ -118,7 +121,14 @@ func runBrowser(ctx context.Context, env *Env, args map[string]any) (ledger.Obse
 	if err := sess.attach(ctx); err != nil {
 		return ledger.Observation{}, err
 	}
-	if err := sess.enableGating(ctx, g); err != nil {
+	// The identity this render uses. A session that was asked for but cannot be
+	// resolved is an error, never a silent anonymous render: "authenticated" would
+	// otherwise be a claim the evidence cannot support.
+	in, err := injectionFor(env, rawURL)
+	if err != nil {
+		return ledger.Observation{}, err
+	}
+	if err := sess.enableGating(ctx, g, in); err != nil {
 		return ledger.Observation{}, err
 	}
 
@@ -176,6 +186,57 @@ func runBrowser(ctx context.Context, env *Env, args map[string]any) (ledger.Obse
 		Tags:      []string{"browser", "render"},
 		Anchors:   []string{"surface:" + finalURL},
 	})
+
+	// Authenticated render: the fact says WHO rendered and how many requests carried
+	// the credential. It never says WHAT the credential was.
+	sess.mu.Lock()
+	injected := sess.injected
+	sess.mu.Unlock()
+	if env.SessionName != "" {
+		ev := evidence()
+		ev["session"] = env.SessionName
+		ev["authenticated"] = true
+		ev["injected_requests"] = injected
+		obs.Facts = append(obs.Facts, ledger.FactSeed{
+			Statement: fmt.Sprintf("以身份 %s 渲染 %s(注入 %d 个请求;请求逐个过 guard 后才注入)",
+				env.SessionName, finalURL, injected),
+			Evidence: ev,
+			Tags:     []string{"browser", "authenticated", "session"},
+			Anchors:  []string{"surface:" + finalURL},
+		})
+		obs.Assets = append(obs.Assets, ledger.AssetSeed{
+			Kind: "surface", Value: "surface:" + finalURL,
+			Props: map[string]any{"url": finalURL, "title": title, "rendered": true, "session": env.SessionName},
+		})
+		// Viewer-side BOLA: this identity can see a marker that belongs to another
+		// identity's declared object. The text is checked transiently; only the
+		// marker and the request id reach the ledger.
+		if snapshot != nil && injected > 0 {
+			for _, w := range env.SessionWatch {
+				if !sameEndpoint(w.URL, finalURL) {
+					continue
+				}
+				if w.Marker == "" || !strings.Contains(snapshot.Text, w.Marker) {
+					continue
+				}
+				fev := evidence()
+				fev["session"] = env.SessionName
+				fev["owner"] = w.Owner
+				fev["marker"] = w.Marker
+				obs.Findings = append(obs.Findings, ledger.FindingSeed{
+					Title:    fmt.Sprintf("登录态渲染可见他人对象:%s 以 %s 看到了 %s 的 %s", env.SessionName, env.SessionName, w.Owner, w.Marker),
+					Severity: "high",
+					Kind:     "bola",
+					Where:    finalURL,
+					Detail: fmt.Sprintf("以 %s 的身份渲染时,页面正文出现 %s 的标记 %s;说明该对象对非所有者可见(仍为候选,需人工确认)。",
+						env.SessionName, w.Owner, w.Marker),
+					Evidence: fev,
+					Tags:     []string{"browser", "bola", "authenticated"},
+					Anchors:  []string{"surface:" + finalURL},
+				})
+			}
+		}
+	}
 	obs.Assets = append(obs.Assets, ledger.AssetSeed{
 		Kind: "surface", Value: "surface:" + finalURL,
 		Props: map[string]any{"url": finalURL, "title": title, "rendered": true},
@@ -407,7 +468,7 @@ func (s *browserSession) attach(ctx context.Context) error {
 }
 
 // enableGating turns on the domains and installs the per-request gate.
-func (s *browserSession) enableGating(ctx context.Context, g *discipline.Guard) error {
+func (s *browserSession) enableGating(ctx context.Context, g *discipline.Guard, in injection) error {
 	sid := s.pageSess
 	for _, domain := range []string{"Page.enable", "Runtime.enable", "Network.enable"} {
 		if _, err := s.client.Send(ctx, domain, nil, sid); err != nil {
@@ -420,7 +481,7 @@ func (s *browserSession) enableGating(ctx context.Context, g *discipline.Guard) 
 	}, sid); err != nil {
 		return fmt.Errorf("web: browser: Fetch.enable: %w", err)
 	}
-	s.installFetchGate(g, sid)
+	s.installFetchGate(g, sid, in)
 
 	// Child targets (popups, out-of-process iframes) must be gated too, or a page
 	// could open an unguarded frame. Auto-attach waits for the debugger, so the
@@ -436,7 +497,7 @@ func (s *browserSession) enableGating(ctx context.Context, g *discipline.Guard) 
 		_, _ = s.client.Send(bg, "Fetch.enable", map[string]any{
 			"patterns": []map[string]any{{"urlPattern": "*", "requestStage": "Request"}},
 		}, childSess)
-		s.installFetchGate(g, childSess)
+		s.installFetchGate(g, childSess, in)
 		_, _ = s.client.Send(bg, "Runtime.runIfWaitingForDebugger", nil, childSess)
 	})
 	if _, err := s.client.Send(ctx, "Target.setAutoAttach", map[string]any{
@@ -452,8 +513,35 @@ func (s *browserSession) enableGating(ctx context.Context, g *discipline.Guard) 
 	return nil
 }
 
+// injection carries the identity the browser renders as.
+//
+// It is deliberately NOT a browser cookie jar: Network.setCookie would let Chrome
+// attach the credential to requests on its own, outside the Fetch gate. Instead the
+// header is added to Fetch.continueRequest, i.e. *after* the guard has authorised
+// that exact request, and only while the request's host matches the identity's own
+// host. One credential, one host, one request at a time.
+type injection struct {
+	session string
+	headers map[string]string
+	// host is the identity's own host ("127.0.0.1:18080"); empty means "no host
+	// binding", in which case credentials are not injected at all.
+	host string
+}
+
+// matches reports whether this request may carry the session credential.
+func (in injection) matches(rawURL string) bool {
+	if in.session == "" || len(in.headers) == 0 || in.host == "" {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, in.host)
+}
+
 // installFetchGate wires Fetch.requestPaused to the guard for one session.
-func (s *browserSession) installFetchGate(g *discipline.Guard, sid string) {
+func (s *browserSession) installFetchGate(g *discipline.Guard, sid string, in injection) {
 	s.client.On("Fetch.requestPaused", func(sessionID string, params json.RawMessage) {
 		if sessionID != sid {
 			return
@@ -462,8 +550,9 @@ func (s *browserSession) installFetchGate(g *discipline.Guard, sid string) {
 			RequestID    string `json:"requestId"`
 			ResourceType string `json:"resourceType"`
 			Request      struct {
-				URL    string `json:"url"`
-				Method string `json:"method"`
+				URL     string            `json:"url"`
+				Method  string            `json:"method"`
+				Headers map[string]string `json:"headers"`
 			} `json:"request"`
 		}
 		if err := json.Unmarshal(params, &p); err != nil || p.RequestID == "" {
@@ -501,6 +590,21 @@ func (s *browserSession) installFetchGate(g *discipline.Guard, sid string) {
 			URL: rawURL, Method: method, Type: p.ResourceType, Allowed: true, ReqID: auth.RequestID,
 		})
 		s.mu.Unlock()
+
+		// The credential goes on the request the guard just authorised, and only on
+		// the identity's own host. Merging (not replacing) keeps the browser's own
+		// headers, so the page still behaves.
+		if in.matches(rawURL) {
+			merged := mergeHeaders(p.Request.Headers, in.headers)
+			s.mu.Lock()
+			s.injected++
+			s.mu.Unlock()
+			_, _ = s.client.Send(bg, "Fetch.continueRequest", map[string]any{
+				"requestId": p.RequestID,
+				"headers":   mergeHeadersCDP(merged),
+			}, sid)
+			return
+		}
 		s.continueRequest(sid, p.RequestID)
 	})
 
@@ -563,11 +667,14 @@ func (s *browserSession) recordBlocked(b blockedRequest) {
 // ---- snapshot --------------------------------------------------------------
 
 type domSnapshot struct {
-	Title         string    `json:"title"`
-	URL           string    `json:"url"`
-	Links         []string  `json:"links"`
-	Forms         []domForm `json:"forms"`
-	ConsoleErrors []string  `json:"-"`
+	Title string    `json:"title"`
+	URL   string    `json:"url"`
+	Links []string  `json:"links"`
+	Forms []domForm `json:"forms"`
+	// Text is the rendered visible text. It exists only to check whether a marker
+	// is visible: it is never persisted, never put in a fact and never in a report.
+	Text          string   `json:"text"`
+	ConsoleErrors []string `json:"-"`
 }
 
 type domForm struct {
@@ -578,6 +685,8 @@ type domForm struct {
 
 const snapshotJS = `(function(){
   try {
+    var text = (document.body ? document.body.innerText : "") || "";
+    if (text.length > 4000) text = text.slice(0, 4000);
     var links = Array.prototype.slice.call(document.querySelectorAll('a[href]'))
       .slice(0, 200).map(function(a){ return a.href; })
       .filter(function(h){ return /^https?:/i.test(h); });
@@ -586,7 +695,7 @@ const snapshotJS = `(function(){
         .map(function(e){ return e.name || e.id; }).filter(Boolean);
       return { action: f.action, method: (f.method||'GET').toUpperCase(), fields: fields };
     });
-    return JSON.stringify({ title: document.title, url: location.href, links: links, forms: forms });
+    return JSON.stringify({ title: document.title, url: location.href, links: links, forms: forms, text: text });
   } catch (e) { return JSON.stringify({ title: '', url: location.href, links: [], forms: [], error: String(e) }); }
 })()`
 
@@ -708,4 +817,85 @@ func detectBrowser() string {
 		}
 	}
 	return ""
+}
+
+// ---- header injection helpers ---------------------------------------------
+
+// mergeHeaders overlays extra on top of the request's own headers.
+//
+// Names are matched case-insensitively (HTTP header names are), and the extra
+// value wins: that is how the session Cookie replaces nothing (there usually is no
+// Cookie yet) or any stale one.
+func mergeHeaders(base, extra map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(extra))
+	for k, v := range base {
+		out[k] = v
+	}
+	for name, value := range extra {
+		for existing := range out {
+			if strings.EqualFold(existing, name) {
+				delete(out, existing)
+			}
+		}
+		out[name] = value
+	}
+	return out
+}
+
+// mergeHeadersCDP renders headers for Fetch.continueRequest, which wants an array
+// of {name, value}. Ordering is fixed so the request is reproducible.
+func mergeHeadersCDP(headers map[string]string) []map[string]string {
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]map[string]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, map[string]string{"name": name, "value": headers[name]})
+	}
+	return out
+}
+
+// injectionFor builds the gate's injection from the dispatcher's resolved session.
+func injectionFor(env *Env, targetURL string) (injection, error) {
+	if env == nil || strings.TrimSpace(env.SessionName) == "" {
+		return injection{}, nil
+	}
+	if len(env.SessionHeaders) == 0 {
+		return injection{}, fmt.Errorf(
+			"web: browser: 会话 %q 没有可用 header(未就绪或为空);拒绝退回匿名渲染", env.SessionName)
+	}
+	host := strings.TrimSpace(env.SessionHost)
+	if host == "" {
+		// Fall back to the navigation target's host. Documented, and still a host
+		// binding - the alternative (inject everywhere) is the thing to avoid.
+		if u, err := url.Parse(targetURL); err == nil {
+			host = u.Host
+		}
+	}
+	headers := make(map[string]string, len(env.SessionHeaders))
+	for k, v := range env.SessionHeaders {
+		if strings.TrimSpace(v) == "" {
+			continue
+		}
+		headers[k] = v
+	}
+	if len(headers) == 0 {
+		return injection{}, fmt.Errorf("web: browser: 会话 %q 的 header 全为空;拒绝匿名渲染", env.SessionName)
+	}
+	return injection{session: env.SessionName, headers: headers, host: host}, nil
+}
+
+// sameEndpoint compares two URLs by scheme-less host + path, ignoring the query:
+// the same object page reached with different query strings is the same object.
+func sameEndpoint(a, b string) bool {
+	norm := func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return raw
+		}
+		return strings.ToLower(u.Host + u.EscapedPath())
+	}
+	return norm(a) == norm(b)
 }

@@ -307,3 +307,230 @@ func factStatements(obs ledger.Observation) []string {
 	}
 	return out
 }
+
+// ---- session injection (v0.6) ----------------------------------------------
+
+func TestHeaderMergeKeepsRequestHeadersAndWins(t *testing.T) {
+	base := map[string]string{"User-Agent": "ua", "cookie": "stale=1"}
+	extra := map[string]string{"Cookie": "sid=sess-alice"}
+	merged := mergeHeaders(base, extra)
+	if merged["User-Agent"] != "ua" {
+		t.Fatal("merge dropped the browser's own headers")
+	}
+	if merged["Cookie"] != "sid=sess-alice" {
+		t.Fatalf("the session cookie did not win: %v", merged)
+	}
+	// Case-insensitive replacement: the stale "cookie" key must be gone.
+	count := 0
+	for name := range merged {
+		if strings.EqualFold(name, "cookie") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("duplicate cookie headers after merge: %v", merged)
+	}
+}
+
+func TestInjectionOnlyMatchesItsOwnHost(t *testing.T) {
+	in := injection{
+		session: "alice",
+		headers: map[string]string{"Cookie": "sid=sess-alice"},
+		host:    "127.0.0.1:18080",
+	}
+	cases := map[string]bool{
+		"http://127.0.0.1:18080/orders/1":            true,
+		"http://127.0.0.1:18080/orders/1?x=1":        true,
+		"HTTP://127.0.0.1:18080/x":                   true,
+		"http://localhost:18080/orders/1":            false, // same server, different host
+		"http://127.0.0.1:18081/orders/1":            false, // different port
+		"https://evil.example/":                      false,
+		"http://127.0.0.1:18080@evil.example/orders": false, // userinfo trick must not pass
+	}
+	for raw, want := range cases {
+		if got := in.matches(raw); got != want {
+			t.Fatalf("matches(%q) = %v, want %v", raw, got, want)
+		}
+	}
+	// No host binding means no injection at all.
+	if (injection{session: "alice", headers: in.headers}).matches("http://127.0.0.1:18080/") {
+		t.Fatal("an injection without a host binding injected the cookie")
+	}
+	// No session means no injection at all.
+	if (injection{headers: in.headers, host: in.host}).matches("http://127.0.0.1:18080/") {
+		t.Fatal("an injection without a session name injected the cookie")
+	}
+}
+
+func TestInjectionForRefusesAnEmptySession(t *testing.T) {
+	if _, err := injectionFor(&Env{SessionName: "alice"}, "http://x/"); err == nil {
+		t.Fatal("a named session with no headers was accepted (would render anonymously)")
+	}
+	if _, err := injectionFor(&Env{}, "http://x/"); err != nil {
+		t.Fatalf("no session should be a plain anonymous render: %v", err)
+	}
+}
+
+// TestBrowserSessionInjection is the v0.6 acceptance test, end to end with Chrome:
+//
+//	alice's cookie travels on 127.0.0.1 only, inside the Fetch gate, and the page
+//	shows alice's object; the same page on the same server under another host name
+//	gets no cookie; bob's cookie does not unlock alice's object.
+func TestBrowserSessionInjection(t *testing.T) {
+	if detectBrowser() == "" {
+		t.Skip("no Chromium-family browser on this machine")
+	}
+	if testing.Short() {
+		t.Skip("browser integration test skipped in -short")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, _ := r.Cookie("sid")
+		switch r.URL.Path {
+		case "/orders/1":
+			if c != nil && c.Value == "sess-alice" {
+				_, _ = io.WriteString(w, "<html><title>order</title><body>ORD-1 owned by alice</body></html>")
+				return
+			}
+			http.Error(w, "forbidden", http.StatusForbidden)
+		case "/whoami":
+			v := "anonymous"
+			if c != nil {
+				v = c.Value
+			}
+			_, _ = io.WriteString(w, "<html><title>who</title><body>you are "+v+"</body></html>")
+		default:
+			_, _ = io.WriteString(w, "<html><title>home</title><body>home</body></html>")
+		}
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	// The scope covers both names for the same server, which is what makes the
+	// host binding the only thing that can keep the cookie off localhost.
+	env, recorder := newTestEnv(t, []string{"127.0.0.1", "localhost"}, nil)
+	env.ArtifactDir = t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// 1) alice sees her object, and the request carried her cookie.
+	alice := *env
+	alice.SessionName = "alice"
+	alice.SessionHeaders = map[string]string{"Cookie": "sid=sess-alice"}
+	alice.SessionHost = host
+	obs, err := Run(ctx, &alice, "browser", map[string]any{"url": srv.URL + "/orders/1", "wait_ms": 900})
+	if err != nil {
+		t.Fatalf("authenticated render: %v", err)
+	}
+	var sawAuth bool
+	for _, f := range obs.Facts {
+		if strings.Contains(f.Statement, "以身份 alice 渲染") {
+			sawAuth = true
+			if f.Evidence["session"] != "alice" || f.Evidence["authenticated"] != true {
+				t.Fatalf("auth fact evidence = %v", f.Evidence)
+			}
+			if n, _ := f.Evidence["injected_requests"].(int); n == 0 {
+				t.Fatalf("no request was reported as injected: %v", f.Evidence)
+			}
+		}
+	}
+	if !sawAuth {
+		t.Fatalf("no authenticated fact; facts=%v", factStatements(obs))
+	}
+
+	// 2) The same object under another host name gets NO cookie.
+	//    localhost resolves to the same server; the scope allows it; the injection
+	//    must not follow.
+	other := *env
+	other.SessionName = "alice"
+	other.SessionHeaders = map[string]string{"Cookie": "sid=sess-alice"}
+	other.SessionHost = host // still 127.0.0.1:port
+	obs2, err := Run(ctx, &other, "browser", map[string]any{
+		"url": "http://localhost:" + strings.Split(host, ":")[1] + "/whoami", "wait_ms": 900,
+	})
+	if err != nil {
+		t.Fatalf("cross-host render: %v", err)
+	}
+	for _, f := range obs2.Facts {
+		if strings.Contains(f.Statement, "sess-alice") {
+			t.Fatalf("the cookie leaked into an observation: %q", f.Statement)
+		}
+	}
+	var injectedZero bool
+	for _, f := range obs2.Facts {
+		if strings.Contains(f.Statement, "以身份 alice 渲染") {
+			if n, _ := f.Evidence["injected_requests"].(int); n == 0 {
+				injectedZero = true
+			}
+		}
+	}
+	if !injectedZero {
+		t.Fatalf("cross-host render did not report zero injection; facts=%v", factStatements(obs2))
+	}
+
+	// 3) No cookie value anywhere in the observation.
+	for _, f := range []ledger.Observation{obs, obs2} {
+		if strings.Contains(observationText(f), "sess-alice") {
+			t.Fatal("a cookie value reached the observation")
+		}
+	}
+	// 4) Every allowed request still has an audit row (injection is inside the gate).
+	known := map[string]bool{}
+	for _, ev := range recorder.snapshot() {
+		if ev.Verdict == "allowed" {
+			known[ev.RequestID] = true
+		}
+	}
+	for _, id := range obs.RequestIDs {
+		if id != "" && !known[id] {
+			t.Fatalf("request %q has no audit row: injection bypassed the gate", id)
+		}
+	}
+}
+
+// TestBrowserViewerBolaCandidate: a viewer identity rendering an object page that
+// shows the owner's marker yields a candidate, never a verified finding.
+func TestBrowserViewerBolaCandidate(t *testing.T) {
+	if detectBrowser() == "" {
+		t.Skip("no Chromium-family browser on this machine")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Deliberately broken: any session may read this object.
+		_, _ = io.WriteString(w, "<html><title>order</title><body>ORD-9 owned by alice</body></html>")
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	env, _ := newTestEnv(t, []string{"127.0.0.1"}, nil)
+	env.ArtifactDir = t.TempDir()
+	env.SessionName = "bob"
+	env.SessionHeaders = map[string]string{"Cookie": "sid=sess-bob"}
+	env.SessionHost = host
+	env.SessionWatch = []MarkerWatch{{Owner: "alice", Marker: "ORD-9", URL: srv.URL + "/orders/9"}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	obs, err := Run(ctx, env, "browser", map[string]any{"url": srv.URL + "/orders/9", "wait_ms": 900})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var found bool
+	for _, f := range obs.Findings {
+		if f.Kind != "bola" {
+			continue
+		}
+		found = true
+		if f.Evidence["session"] != "bob" || f.Evidence["owner"] != "alice" || f.Evidence["marker"] != "ORD-9" {
+			t.Fatalf("bola evidence = %v", f.Evidence)
+		}
+		if f.Evidence["request_id"] == nil {
+			t.Fatalf("bola finding carries no request_id: %v", f.Evidence)
+		}
+	}
+	if !found {
+		t.Fatalf("no viewer-side bola candidate; findings=%+v", obs.Findings)
+	}
+	if strings.Contains(observationText(obs), "sess-bob") {
+		t.Fatal("the cookie value reached the observation")
+	}
+}

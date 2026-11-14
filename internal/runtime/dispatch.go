@@ -67,12 +67,22 @@ func (d *Dispatcher) Run(ctx context.Context, engagementID int64, capability str
 		if err != nil {
 			return ledger.Observation{}, err
 		}
+		// A browser render may ask for an identity. Resolve it here, in memory; the
+		// intent keeps only the name.
+		sess, err := d.sessionIdentityFor(args)
+		if err != nil {
+			return ledger.Observation{}, err
+		}
 		return c.Run(ctx, &web.Env{
-			Guard:        guard,
-			Store:        d.Store,
-			EngagementID: eng.ID,
-			Engagement:   eng.Name,
-			ArtifactDir:  filepath.Join(d.ArtifactBase, sanitiseName(eng.Name)),
+			Guard:          guard,
+			Store:          d.Store,
+			EngagementID:   eng.ID,
+			Engagement:     eng.Name,
+			ArtifactDir:    filepath.Join(d.ArtifactBase, sanitiseName(eng.Name)),
+			SessionName:    sess.Name,
+			SessionHeaders: sess.Headers,
+			SessionHost:    sess.Host,
+			SessionWatch:   sess.Watch,
 		}, resolved)
 	}
 	if c, ok := accounts.Lookup(capability); ok {

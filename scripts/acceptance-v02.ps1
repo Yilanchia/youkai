@@ -541,7 +541,92 @@ try {
     Assert ($snap2.Code -eq 201) "second snapshot created"
     Assert ($snap2.Body.sha256 -ne $snap1.Body.sha256) "the second snapshot hashes differently after a scope change"
 
-    # ---- 13. database-level invariants -------------------------------------
+    # ---- 13. login-state browser (session injected inside the Fetch gate) ---
+    Write-Host "`n== authenticated browser ==" -ForegroundColor Cyan
+
+    # alice's own object: the render must carry her cookie, and the page must show
+    # the marker that only her session can read.
+    $iAuth = New-Intent $engId "browser" @{
+        url = "http://127.0.0.1:$labPort/orders/1"; session = "alice"; wait_ms = 1200
+    } "以 alice 的身份只读渲染她自己的对象"
+    Assert ($iAuth.Code -eq 201) "authenticated browser intent queued"
+    Assert ($iAuth.Body.gate.tier -eq 1) "authenticated render is still tier 1"
+
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ max_steps = 4 }
+    Assert ($runRes.Code -eq 202) "authenticated render run accepted"
+    $authRun = $runRes.Body.run_id
+    for ($i = 0; $i -lt 180; $i++) {
+        Start-Sleep -Milliseconds 500
+        $r = Api "GET" "/api/engagements/$engId/runs/$authRun" $null
+        if ($r.Body.done) { break }
+    }
+    $g2 = (Api "GET" "/api/engagements/$engId/graph" $null).Body
+    $authFacts = @($g2.facts | Where-Object { $_.statement -match "以身份 alice 渲染" })
+    Assert ($authFacts.Count -ge 1) "the render recorded WHO it rendered as"
+    if ($authFacts.Count -ge 1) {
+        Assert ($authFacts[0].evidence.session -eq "alice") "the fact carries the session name"
+        Assert ($authFacts[0].evidence.injected_requests -ge 1) "at least one request carried the credential"
+        Assert ($authFacts[0].evidence.request_id) "the authenticated fact cites a request_id"
+    }
+    $allText = $g2.facts | ForEach-Object { $_ | ConvertTo-Json -Depth 6 -Compress } | Out-String
+    Assert ($allText -notmatch "sess-alice|sess-bob") "no cookie value reached the ledger"
+
+    # bob looking at alice's deliberately broken object -> candidate, never verified.
+    $iPeek = New-Intent $engId "browser" @{
+        url = "http://127.0.0.1:$labPort/orders/2"; session = "bob"; wait_ms = 1200
+    } "以 bob 的身份渲染 alice 的对象页(越权视角)"
+    Assert ($iPeek.Code -eq 201) "viewer render intent queued"
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ max_steps = 4 }
+    for ($i = 0; $i -lt 180; $i++) {
+        Start-Sleep -Milliseconds 500
+        $r = Api "GET" "/api/engagements/$engId/runs/$($runRes.Body.run_id)" $null
+        if ($r.Body.done) { break }
+    }
+    $g3 = (Api "GET" "/api/engagements/$engId/graph" $null).Body
+    $viewer = @($g3.findings | Where-Object { $_.kind -eq "bola" -and $_.where -match "/orders/2" -and $_.title -match "bob" })
+    Assert ($viewer.Count -ge 1) "viewer-side render produced a BOLA candidate"
+    if ($viewer.Count -ge 1) {
+        Assert ($viewer[0].state -eq "candidate") "the viewer-side finding stays a candidate"
+        Assert ($viewer[0].evidence.session -eq "bob" -and $viewer[0].evidence.owner -eq "alice") "the finding names session and owner, not the cookie"
+    }
+
+    # A session that does not exist must error, not silently render anonymously.
+    $iGhost = New-Intent $engId "browser" @{
+        url = "http://127.0.0.1:$labPort/orders/1"; session = "nobody"; wait_ms = 300
+    }
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ max_steps = 2 }
+    for ($i = 0; $i -lt 120; $i++) {
+        Start-Sleep -Milliseconds 500
+        $r = Api "GET" "/api/engagements/$engId/runs/$($runRes.Body.run_id)" $null
+        if ($r.Body.done) { break }
+    }
+    $g4 = (Api "GET" "/api/engagements/$engId/graph" $null).Body
+    $ghostFacts = @($g4.facts | Where-Object { $_.statement -match "以身份 nobody 渲染" })
+    Assert ($ghostFacts.Count -eq 0) "an unknown session does not render (no anonymous fallback)"
+
+    # Cross-host: the same server under another name is still in scope, but the
+    # identity's credential must not follow it.
+    $scopeX = (Api "GET" "/api/engagements/$engId" $null).Body.scope
+    $scopeX.include = @("127.0.0.1", "localhost")
+    $r = Api "PUT" "/api/engagements/$engId/scope" @{ scope = $scopeX; updated_by = "acceptance" }
+    Assert ($r.Code -eq 200) "scope widened to cover the second host name"
+    $iX = New-Intent $engId "browser" @{
+        url = "http://localhost:$labPort/orders/1"; session = "alice"; wait_ms = 800
+    } "跨 host 渲染:会话不应跟随"
+    $runRes = Api "POST" "/api/engagements/$engId/runs" @{ max_steps = 4 }
+    for ($i = 0; $i -lt 180; $i++) {
+        Start-Sleep -Milliseconds 500
+        $r = Api "GET" "/api/engagements/$engId/runs/$($runRes.Body.run_id)" $null
+        if ($r.Body.done) { break }
+    }
+    $g5 = (Api "GET" "/api/engagements/$engId/graph" $null).Body
+    $cross = @($g5.facts | Where-Object { $_.statement -match "以身份 alice 渲染 http://localhost" })
+    Assert ($cross.Count -ge 1) "the cross-host render happened"
+    if ($cross.Count -ge 1) {
+        Assert ($cross[0].evidence.injected_requests -eq 0) "the credential did NOT follow to another host"
+    }
+
+    # ---- 14. database-level invariants -------------------------------------
     Write-Host "`n== database guards ==" -ForegroundColor Cyan
     $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE audit_log SET status=999;" 2>&1 | Out-String
     Assert ($out -match "append-only") "audit_log refuses UPDATE at the database level"
