@@ -51,6 +51,11 @@
   该用例只关心"克隆之间 cookie 隔离",已去掉 Secure 标志,与版本无关。
 - 最终:`ci`(1.22 + stable)与 `invariants`(五个命名作业)**全绿**;`v0.9.0` 已打 tag 并推送。
 
+- **已发布**:<https://github.com/Yilanchia/youkai/releases/tag/v0.9.0>(tag 指向最后一个全绿的提交)。
+- 两个徽章实测为 `passing`;仓库描述与 topics 已填。
+- `go-licenses report ./...`:全部为 MIT / BSD-3-Clause,**依赖图里没有任何 copyleft**,
+  清单已写进 `NOTICE`。
+
 ## 发布后
 
 - [ ] README 徽章显示绿;`go-licenses report ./...` 核对传递依赖许可(NOTICE 已声明)。
