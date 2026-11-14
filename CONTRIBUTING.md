@@ -8,6 +8,9 @@ demonstration. Contributions are judged against that order.
 ```bash
 # PostgreSQL is required for the ledger tests. Any instance works; CI uses a
 # throwaway container, and scripts/acceptance-v02.ps1 manages its own.
+# NOTE: youkai_dev_pw is a local-development default for a 127.0.0.1-only
+# throwaway database. It is NOT a production credential - pick your own for any
+# instance that is reachable off-localhost.
 export YOUKAI_TEST_DSN="postgres://youkai:youkai_dev_pw@127.0.0.1:55432/youkai_test?sslmode=disable"
 
 go build ./...

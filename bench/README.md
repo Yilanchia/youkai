@@ -1,5 +1,7 @@
 # bench —— 本机靶场基准
 
+> `youkai_dev_pw` 只是本机 127.0.0.1 临时库的开发默认口令,不是生产凭据;联网实例请自行改。
+
 ```bash
 export YOUKAI_BENCH_DSN="postgres://youkai:youkai_dev_pw@127.0.0.1:55432/youkai_test?sslmode=disable"
 go run ./bench -port 18088 -max-steps 12

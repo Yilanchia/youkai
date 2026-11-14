@@ -1,6 +1,6 @@
 {
   "fairy": {
-    "cwd": "D:\\fairy_fairy",
+    "cwd": "/path/to/fairy",
     "cmd": "node",
     "args": [
       "src/cli.js",
@@ -8,7 +8,7 @@
     ]
   },
   "verdex": {
-    "cwd": "D:\\漏洞挖掘工作台",
+    "cwd": "/path/to/verdex",
     "cmd": "node",
     "args": [
       "bin/verdex-mcp.mjs"
