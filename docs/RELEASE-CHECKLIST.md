@@ -36,6 +36,21 @@
       ③ 能力面(web + binary + 账号/BOLA + CDP 浏览器 + 配置 + 证据/披露 + API schema/JWT/OAuth)。
 - [ ] Release note 附红线声明(SECURITY.md 口径):只对授权目标、无 scope 不发包、不含自动深度利用。
 
+## 2026-11-14 实际执行记录
+
+- `go mod tidy` 完成:`gopkg.in/yaml.v3` 变为 direct;tidy 会把 `go` 顶到 1.25
+  (经 yaml.v3 的测试依赖 `rogpeppe/go-internal`),已把该依赖钉在 v1.12.0 以保持 `go 1.22`。
+- 首次推送被 GitHub **Push Protection** 拦下:`internal/binary` 的测试夹具里有合成 AWS key。
+  已换成 AWS 官方文档示例值(`AKIAIOSFODNN7EXAMPLE` / `…EXAMPLEKEY`),并用 `filter-branch`
+  把旧值从**全部历史**中清掉(仓库此前从未推送,重写安全)。
+- 首次 CI 红:`web/index.html` 被 `.gitignore` 的 `*.html` 吃掉,**SPA 入口没进仓库** → `go build` 失败。
+  已加 `!/web/*.html` 并补提交。
+- 第二次 CI 红(clean DB):`internal/api` 测试夹具在 `Migrate` 之前 `DELETE FROM settings`。
+  本地一直有已迁移的库所以没暴露。已改为先 migrate。
+- 第三次 CI 红(仅 Go 1.22):测试夹具用明文 HTTP 下发 `Secure` cookie,jar 是否接受随 Go 版本变化。
+  该用例只关心"克隆之间 cookie 隔离",已去掉 Secure 标志,与版本无关。
+- 最终:`ci`(1.22 + stable)与 `invariants`(五个命名作业)**全绿**;`v0.9.0` 已打 tag 并推送。
+
 ## 发布后
 
 - [ ] README 徽章显示绿;`go-licenses report ./...` 核对传递依赖许可(NOTICE 已声明)。
