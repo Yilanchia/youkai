@@ -123,7 +123,23 @@ function renderChat(host) {
   const submit = async () => {
     const text = input.value.trim();
     if (!text) return;
-    if (!state.current) return banner("先建一个任务:对话要有一个上下文");
+    // v0.20 fix: a first-time operator has no task yet. The conversation is the
+    // entry point, so the first message creates a draft task to hold the context
+    // (chat is bound to an engagement on the backend) instead of refusing. No
+    // scope is granted here - the task starts with an empty passport, so nothing
+    // can be sent at a target until the operator confirms a scope_draft card.
+    if (!state.current) {
+      try {
+        const draft = await api("/api/engagements", {
+          method: "POST",
+          body: JSON.stringify({ name: "chat-" + new Date().toISOString().slice(5, 16) }),
+        });
+        await loadEngagements();
+        await selectEngagement(draft.id);
+      } catch (e) {
+        return banner("没能开一个对话任务:" + e.message);
+      }
+    }
     const cs2 = chatState();
     cs2.messages.push({ role: "user", content: text, cards: [] });
     paintHistory(cs2.messages);
