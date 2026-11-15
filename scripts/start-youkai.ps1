@@ -10,7 +10,14 @@
 $ErrorActionPreference = 'Stop'
 try {
     $root = Split-Path -Parent $PSScriptRoot          # 仓库根目录
-    $port = 55432
+    # 集群位置自动识别:这台机器上旧的 .pgsql\data 在 2026-11-15 被强杀后 WAL 截断,
+    # 已重建到 .pgsql\data2(55433)。两处都可以用 YOUKAI_PGPORT / YOUKAI_PGDATA 覆盖。
+    $pgDataDefault = if (Test-Path (Join-Path $root '.pgsql\data2\PG_VERSION')) {
+        Join-Path $root '.pgsql\data2'
+    } else {
+        Join-Path $root '.pgsql\data'
+    }
+    $port = if ($env:YOUKAI_PGPORT) { [int]$env:YOUKAI_PGPORT } elseif ($pgDataDefault -like '*data2') { 55433 } else { 55432 }
     $db   = 'youkai'
     $pgPw = if ($env:YOUKAI_PG_PASSWORD) { $env:YOUKAI_PG_PASSWORD } else { 'youkai_dev_pw' }
     $dsn  = "postgres://youkai:$pgPw@127.0.0.1:$port/$db`?sslmode=disable"
@@ -18,7 +25,7 @@ try {
     # PostgreSQL 二进制目录(可用 YOUKAI_PG 覆盖)。
     $pgDir = if ($env:YOUKAI_PG) { $env:YOUKAI_PG } else { 'D:\tools\pg\pgsql' }
     $pgBin = Join-Path $pgDir 'bin'
-    $pgData = Join-Path $root '.pgsql\data'
+    $pgData = if ($env:YOUKAI_PGDATA) { $env:YOUKAI_PGDATA } else { $pgDataDefault }
     $pgLog  = Join-Path $root '.pgsql\server.log'
 
     $youkaid = Join-Path $root 'youkaid.exe'
@@ -32,6 +39,8 @@ try {
     $env:PGPASSWORD = $pgPw
     & "$pgBin\pg_isready.exe" -h 127.0.0.1 -p $port 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
+        # A hard kill leaves postmaster.pid behind and pg_ctl then refuses to start.
+        Remove-Item (Join-Path $pgData 'postmaster.pid') -Force -ErrorAction SilentlyContinue
         Write-Host "启动 PostgreSQL (端口 $port)..." -ForegroundColor Cyan
         & "$pgBin\pg_ctl.exe" -D $pgData -l $pgLog -o "-p $port -c listen_addresses=127.0.0.1" -w start
         $ok = $false
