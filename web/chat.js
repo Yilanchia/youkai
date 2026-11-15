@@ -26,13 +26,20 @@ function renderChat(host) {
   const parked = parkedIntents();
   const runs = state.runs || [];
   const lastRun = runs[0];
+  // The engine's own review notes: "what changed after the last step". This is the
+  // closest thing to "what is it thinking" the UI can honestly show.
+  const reflections = ((state.graph && state.graph.facts) || [])
+    .filter((f) => (f.tags || []).includes("reflection"))
+    .map((f) => f.statement);
+  const lastReflection = reflections.length ? reflections[reflections.length - 1] : "";
   const statusLine = (function () {
     if (parked.length) {
       return { kind: "wait", text: `停在第 ${parked.length} 个动作前,等你点头` };
     }
     if (lastRun && lastRun.status === "running") return { kind: "busy", text: "正在自主跑只读检查…" };
     if ((st.audit_allowed || 0) === 0) return { kind: "idle", text: "还没开始:说一句话,或点「开始扫描」" };
-    return { kind: "done", text: `这一轮跑完了:${st.audit_allowed || 0} 次请求、${st.findings || 0} 条发现` };
+    const base = `这一轮跑完了:${st.audit_allowed || 0} 次请求、${st.findings || 0} 条发现`;
+    return { kind: "done", text: lastReflection ? base + " · " + lastReflection : base };
   })();
   host.appendChild(el("div", { class: "run-state " + statusLine.kind }, statusLine.text));
 

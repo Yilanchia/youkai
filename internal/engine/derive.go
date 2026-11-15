@@ -50,6 +50,10 @@ func (e *Engine) derive(ctx context.Context) (int, error) {
 	added := 0
 	rules := []func(context.Context, ledger.GraphView) ([]derivation, error){
 		e.ruleBootstrapAssets,
+		// Chains come right after the assets exist and BEFORE the plain rules that
+		// would otherwise derive the same comparison with no dependencies (and run
+		// it immediately - exactly the "assembled, therefore executed" failure).
+		e.ruleChains,
 		e.ruleGitConfigProbe,
 		e.ruleSurfaceScan,
 		e.ruleAPISpec,
@@ -94,10 +98,10 @@ func (e *Engine) derive(ctx context.Context) (int, error) {
 			return added, err
 		}
 	}
-	// Chain assembly runs after the plain rules: it needs their assets to know
-	// whether a lead exists, and it creates intents with dependencies, which the
-	// derivation type cannot express.
-	if n, cerr := e.ensureChain(ctx, g); cerr != nil {
+	// A second pass after every rule, for chains whose evidence arrived late (a
+	// hypothesis ingested this round, for example). Existing nodes are adopted, not
+	// duplicated; a node that already ran is never retro-fitted.
+	if n, cerr := e.ensureChains(ctx, g); cerr != nil {
 		return added, cerr
 	} else if n > 0 {
 		added += n
@@ -562,4 +566,14 @@ func (e *Engine) ruleAPISpec(_ context.Context, g ledger.GraphView) ([]derivatio
 		})
 	}
 	return out, nil
+}
+
+// ruleChains is the chain pass expressed as a rule so it can sit in the ordered
+// list. It creates intents with dependencies directly (the derivation type has no
+// way to express ordering), so it does its own bookkeeping.
+func (e *Engine) ruleChains(ctx context.Context, g ledger.GraphView) ([]derivation, error) {
+	if _, err := e.ensureChains(ctx, g); err != nil {
+		return nil, err
+	}
+	return nil, nil
 }

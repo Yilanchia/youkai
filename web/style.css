@@ -216,3 +216,18 @@ pre.small { font-size: 11px; background: var(--bg); border: 1px solid var(--line
 }
 .approve-card strong { color: #e8d9a8; }
 .approve-card p { margin: .3rem 0; }
+
+/* ---- v0.19: reasoning block + step badges ---- */
+.reasoning {
+  margin: .35rem 0 .6rem; padding: .55rem .7rem; border-radius: 8px;
+  border: 1px solid #2c5a41; background: #14251c; line-height: 1.55;
+}
+.reasoning strong { color: var(--accent); margin-right: .35rem; }
+.stop-badge {
+  font-size: 11px; padding: .05rem .4rem; border-radius: 999px;
+  border: 1px solid #6a5a2f; color: #e8d9a8; margin-left: .25rem;
+}
+.auto-badge {
+  font-size: 11px; padding: .05rem .4rem; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted); margin-left: .25rem;
+}

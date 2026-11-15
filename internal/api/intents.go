@@ -94,6 +94,10 @@ func (s *Server) createIntent(w http.ResponseWriter, r *http.Request, eng ledger
 		Args       map[string]any `json:"args"`
 		Rationale  string         `json:"rationale"`
 		Expected   string         `json:"expected_fact"`
+		// Deps lets a conversational plan express order (v0.19): this step is not
+		// claimable until those intents are done. Approval stays per-step, so a
+		// dependency never grants authority - it only withholds it.
+		Deps []int64 `json:"deps"`
 	}
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "%v", err)
@@ -107,6 +111,12 @@ func (s *Server) createIntent(w http.ResponseWriter, r *http.Request, eng ledger
 		writeErr(w, http.StatusBadRequest, "rationale is required (why this step?)")
 		return
 	}
+	for _, dep := range body.Deps {
+		if _, derr := s.cfg.Store.Intent(r.Context(), eng.ID, dep); derr != nil {
+			writeErr(w, http.StatusBadRequest, "依赖的步骤 #%d 不属于这个作业", dep)
+			return
+		}
+	}
 	dec := gate.Explain(body.Capability, body.Args)
 	spec := ledger.IntentSpec{
 		Capability:       body.Capability,
@@ -116,6 +126,7 @@ func (s *Server) createIntent(w http.ResponseWriter, r *http.Request, eng ledger
 		ExpectedFact:     body.Expected,
 		GateReason:       dec.Reason,
 		RequiresApproval: dec.Tier.NeedsHuman(),
+		Deps:             body.Deps,
 	}
 	it, created, err := s.cfg.Store.EnsureIntent(r.Context(), eng.ID, spec)
 	if err != nil {

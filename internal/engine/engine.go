@@ -184,6 +184,10 @@ type Engine struct {
 	priorWork []ledger.TraceHit
 	// orderNote records the ranking of the last batch, for the trace.
 	orderNote string
+	// lastReflections keeps the most recent review notes for the status line.
+	lastReflections []string
+	// lastGraph is the graph the current round is deciding on (chain scoring).
+	lastGraph ledger.GraphView
 }
 
 // New builds an engine.
@@ -291,6 +295,20 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 		steps += len(recs)
 		rep.Steps = append(rep.Steps, recs...)
 		for _, rec := range recs {
+			// Reflection: say what this step changed before deciding the next one.
+			// It runs even for a miss, and a miss is reported as a miss.
+			for _, it := range work {
+				if it.ID == rec.IntentID {
+					if r := e.reflectOn(it, rec); r != nil {
+						e.recordReflection(ctx, it, rec)
+						e.lastReflections = append(e.lastReflections, r.Line)
+						if len(e.lastReflections) > 8 {
+							e.lastReflections = e.lastReflections[len(e.lastReflections)-8:]
+						}
+					}
+					break
+				}
+			}
 			if rec.Sensitive != nil {
 				rep.Sensitive = rec.Sensitive
 				return finish(StopSensitive, fmt.Sprintf(
@@ -339,6 +357,7 @@ func (e *Engine) choose(g ledger.GraphView, budget int, mc mandateCtx) (work, bl
 	}
 	// v0.17: rank by evidence, deterministically. The order decides what the budget
 	// is spent on; it never decides what is allowed.
+	e.lastGraph = g
 	scored := e.orderWork(work)
 	ordered := make([]ledger.Intent, 0, len(scored))
 	for _, s := range scored {

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"sort"
+	"strings"
 
 	"youkai/internal/ledger"
 )
@@ -52,7 +53,20 @@ func (e *Engine) scoreIntent(it ledger.Intent) (int, []string) {
 		score += 1
 		why = append(why, "铺开面(+1)")
 	}
-	// 5) A step whose endpoint is already covered by the engagement's trace is worth
+	// 5) Chain criticality: a step that other steps depend on gates the whole chain,
+	// so it goes first. The dependency graph is the source of truth, not a guess.
+	if e.dependedOn(it.ID) {
+		score += 4
+		why = append(why, "链上关键步,别的步骤在等它(+4)")
+	}
+	// 6) Fresh evidence: after a confirmed lead, probing the same area is worth more
+	// than opening a brand-new surface. This keeps the run coherent instead of
+	// scattering.
+	if e.hasRecentConfirmation() {
+		score += 1
+		why = append(why, "刚有线索被证实(+1)")
+	}
+	// 7) A step whose endpoint is already covered by the engagement's trace is worth
 	// less: the derivation guard would drop it anyway, this just ranks it lower.
 	if e.priorWork != nil && ledger.Covered(e.priorWork, it.Capability, ledger.TargetKey(it.Args)) {
 		score -= 4
@@ -119,4 +133,26 @@ func itoa64(n int64) string {
 		return "-" + string(b)
 	}
 	return string(b)
+}
+
+// dependedOn reports whether any intent waits for this one.
+func (e *Engine) dependedOn(id int64) bool {
+	for _, it := range e.lastGraph.Intents {
+		for _, d := range it.Deps {
+			if d == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasRecentConfirmation reports whether the last round produced a confirmed lead.
+func (e *Engine) hasRecentConfirmation() bool {
+	for _, line := range e.lastReflections {
+		if strings.Contains(line, "被证实") {
+			return true
+		}
+	}
+	return false
 }
