@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -295,6 +296,12 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 			// yet - from the operator's chair that used to look like "it did nothing".
 			if waiting := e.waitingOnApproval(g); len(waiting) > 0 {
 				return finish(StopNeedsApproval, waiting[0])
+			}
+			// A target that does not resolve or refuses the connection blocks every
+			// read-only step; say that plainly instead of a bare "nothing to do", so
+			// the operator can tell a wrong URL from a real idle.
+			if fail := e.blockedFailure(g); fail != "" {
+				return finish(StopIdle, fail)
 			}
 			if rep.Reason == "" {
 				rep.Reason = "no claimable intent and no derivable next step"
@@ -741,6 +748,52 @@ func hypothesisIDOf(args map[string]any) int64 {
 //
 // It looks for a step that is parked for approval and has dependants: approving it
 // is what unblocks the run. Returns a sentence per blocked dependency owner.
+// blockedFailure returns an operator-readable reason when steps were blocked by a
+// failed attempt (not parked for approval). The common real case is a target that
+// does not resolve or refuses the connection: without this the run just says
+// "idle, nothing to do", and the operator cannot tell a wrong URL from a bug.
+func (e *Engine) blockedFailure(g ledger.GraphView) string {
+	var caps []string
+	var detail string
+	for _, it := range g.Intents {
+		if it.Status != ledger.StatusBlocked || !strings.Contains(it.Trace, "capability failed") {
+			continue
+		}
+		caps = append(caps, it.Capability)
+		if detail == "" {
+			switch {
+			case strings.Contains(it.Trace, "no such host"):
+				detail = "目标域名解析不了(no such host)—— 确认网址拼写对不对、这个站是不是真的存在/在线"
+			case strings.Contains(it.Trace, "connection refused"):
+				detail = "目标拒绝连接(connection refused)—— 确认端口/协议对不对、服务是否在跑"
+			case strings.Contains(it.Trace, "timeout") || strings.Contains(it.Trace, "deadline exceeded"):
+				detail = "连接目标超时 —— 确认目标可达、没被网络/防火墙挡住"
+			case strings.Contains(it.Trace, "certificate") || strings.Contains(it.Trace, "x509"):
+				detail = "目标 TLS 证书有问题 —— 确认用 http 还是 https、证书是否自签"
+			}
+		}
+	}
+	if len(caps) == 0 {
+		return ""
+	}
+	if detail == "" {
+		detail = "这些只读步骤执行失败了(看审计里的具体原因)"
+	}
+	return fmt.Sprintf("%d 个只读步骤没跑成:%s(受影响:%s)", len(caps), detail, strings.Join(dedupeStrings(caps), "/"))
+}
+
+func dedupeStrings(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func (e *Engine) waitingOnApproval(g ledger.GraphView) []string {
 	// A dependency is "waiting on a human" if it is already parked OR if it is a
 	// tier-2 step that has not run yet - at the moment this is called, parking may
