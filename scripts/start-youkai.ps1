@@ -26,7 +26,14 @@ try {
     $pgDir = if ($env:YOUKAI_PG) { $env:YOUKAI_PG } else { 'D:\tools\pg\pgsql' }
     $pgBin = Join-Path $pgDir 'bin'
     $pgData = if ($env:YOUKAI_PGDATA) { $env:YOUKAI_PGDATA } else { $pgDataDefault }
-    $pgLog  = Join-Path $root '.pgsql\server.log'
+    # server.log 可能被杀毒/安全软件短暂锁住导致 pg_ctl "Permission denied";
+    # 逐个退回可写的日志名,别让日志锁挡住启动。
+    $pgLog = $null
+    foreach ($cand in @('server.log','server2.log',"server-$(Get-Date -Format 'yyyyMMdd-HHmmss').log")) {
+        $p = Join-Path $root ".pgsql\$cand"
+        try { [IO.File]::OpenWrite($p).Close(); $pgLog = $p; break } catch { continue }
+    }
+    if (-not $pgLog) { $pgLog = Join-Path $env:TEMP "youkai-pg.log" }
 
     $youkaid = Join-Path $root 'youkaid.exe'
     if (-not (Test-Path $youkaid)) {
@@ -81,6 +88,19 @@ try {
     # 4) 端口用 8799,避开你以前在 :8787 跑的旧应用残留的 service worker。
     #    youkaid 在前台跑(日志留在本窗口);后台轮询等它就绪再开浏览器,避免首开连接被拒。
     $addr = '127.0.0.1:8799'
+    $uiPort = 8799
+    # 先停掉占着 8799 的旧 youkaid(上次没退干净会让新实例 bind 失败)。只停 youkaid,不碰别的。
+    $busy = Get-NetTCPConnection -LocalPort $uiPort -State Listen -ErrorAction SilentlyContinue
+    foreach ($c in $busy) {
+        $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
+        if ($p -and $p.ProcessName -eq 'youkaid') {
+            Write-Host "停掉占用 $uiPort 的旧 youkaid (PID $($p.Id))..." -ForegroundColor Cyan
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 800
+        } elseif ($p) {
+            throw "端口 $uiPort 被进程 $($p.ProcessName) (PID $($p.Id)) 占用,且它不是 youkaid;请先处理它,或设别的端口。"
+        }
+    }
     $tok  = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
     $url  = "http://$addr/#token=$tok"
     Write-Host "控制台:$url" -ForegroundColor Green
