@@ -236,23 +236,39 @@ function renderChatCard(card) {
     go.addEventListener("click", async () => {
       go.disabled = true;
       try {
-        const created = await api("/api/engagements", {
-          method: "POST",
-          body: JSON.stringify({
-            name: card.name || "chat-" + new Date().toISOString().slice(5, 16),
-            scope: Object.assign({
-              basis: "操作员在对话中确认有权测试该目标",
-              operator: "operator", max_requests: 2000, rps: 5,
-            }, sc),
-          }),
-        });
-        // The click is the human act: it creates the task AND starts the read-only
-        // run, so "confirmed" actually means "it is working now".
-        await loadEngagements();
-        await selectEngagement(created.id);
-        await api(`/api/engagements/${created.id}/runs`, {
-          method: "POST",
-          body: JSON.stringify({ max_steps: 12 }),
+        const scopeBody = Object.assign({
+          basis: "操作员在对话中确认有权测试该目标",
+          operator: "operator", max_requests: 2000, rps: 5,
+        }, sc);
+        // If the conversation is already held by a draft task (the one the first
+        // message created), give THAT task the scope. Creating a second task would
+        // move the run - and the report - into an engagement the chat history is
+        // not attached to, so the operator would be watching a different task.
+        const draft = draftTask();
+        let targetID;
+        if (draft) {
+          await api(`/api/engagements/${draft.id}/scope`, {
+            method: "PUT", body: JSON.stringify({ scope: scopeBody, updated_by: "operator" }),
+          });
+          await loadEngagements();
+          await selectEngagement(draft.id);
+          targetID = draft.id;
+        } else {
+          const created = await api("/api/engagements", {
+            method: "POST",
+            body: JSON.stringify({
+              name: card.name || "chat-" + new Date().toISOString().slice(5, 16),
+              scope: scopeBody,
+            }),
+          });
+          await loadEngagements();
+          await selectEngagement(created.id);
+          targetID = created.id;
+        }
+        // The click is the human act: the scope is set AND the read-only run starts,
+        // so "confirmed" actually means "it is working now".
+        await api(`/api/engagements/${targetID}/runs`, {
+          method: "POST", body: JSON.stringify({ max_steps: 12 }),
         });
         banner("开工了:只读检查会自己跑,遇到要冒险的动作会停下来问你。", "ok");
         await refresh();
@@ -335,4 +351,14 @@ async function testLLM() {
     state.llmTest = { error: e.message };
   }
   return state.llmTest;
+}
+// draftTask returns the current task if it is still a draft (no authorised target
+// yet). The first chat message creates one so the conversation has somewhere to
+// live; confirming a scope should fill that task, not create a second one.
+function draftTask() {
+  const cur = state.current;
+  if (!cur) return null;
+  const include = (cur.scope && cur.scope.include) || [];
+  if (include.length > 0) return null;
+  return cur;
 }
