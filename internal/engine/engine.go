@@ -32,6 +32,8 @@ type Store interface {
 	Graph(ctx context.Context, engagementID int64) (ledger.GraphView, error)
 	EnsureIntent(ctx context.Context, engagementID int64, spec ledger.IntentSpec) (ledger.Intent, bool, error)
 	SetIntentStatus(ctx context.Context, engagementID, id int64, status string) error
+	// SetIntentDeps retro-fits a chain dependency onto an already-derived step.
+	SetIntentDeps(ctx context.Context, engagementID, id int64, deps []int64) error
 	AppendTrace(ctx context.Context, engagementID, id int64, line string) error
 	// SearchTraces reads back what past steps did: the derivation guard and the
 	// planner section both use it.

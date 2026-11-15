@@ -31,6 +31,7 @@
 | [DEVPLAN-v0.15](DEVPLAN-v0.15.md) | 部分实现 |
 | [DEVPLAN-v0.16](DEVPLAN-v0.16.md) | 部分实现 |
 | [DEVPLAN-v0.17](DEVPLAN-v0.17.md) | 部分实现 |
+| [DEVPLAN-v0.18](DEVPLAN-v0.18-backfill.md) | 已实现(A/B/C) |
 
 ## 进度(IMPL-STATUS)
 
@@ -51,6 +52,7 @@
 | [IMPL-STATUS-v0.13](IMPL-STATUS-v0.13.md) | 现行 | 白盒源码分析(代码线索指导黑盒验证) |
 | [IMPL-STATUS-v0.14](IMPL-STATUS-v0.14.md) | 现行 | 五类新探针(SSRF/穿越/命令注入/XXE/上传),全部只判存在 |
 | [IMPL-STATUS-v0.15-17](IMPL-STATUS-v0.15-17.md) | 现行 | JWT 深度 + 反致盲 + 证据加权排序 |
+| [IMPL-STATUS-v0.18](IMPL-STATUS-v0.18.md) | 现行 | 反致盲闭环 + 多步链 + 认证补齐 |
 | [ADR-006](ADR-006-approve-not-sign.md) | 生效 | 档 2 默认 UI 点头,签名降级为可选(取代 ADR-005 的委托书) |
 | [ADR-005](ADR-005-conversational-and-mandate.md) | 部分被覆盖 | 对话面板保留;委托书改为 opt-in |
 

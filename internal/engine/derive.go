@@ -94,6 +94,14 @@ func (e *Engine) derive(ctx context.Context) (int, error) {
 			return added, err
 		}
 	}
+	// Chain assembly runs after the plain rules: it needs their assets to know
+	// whether a lead exists, and it creates intents with dependencies, which the
+	// derivation type cannot express.
+	if n, cerr := e.ensureChain(ctx, g); cerr != nil {
+		return added, cerr
+	} else if n > 0 {
+		added += n
+	}
 	return added, nil
 }
 

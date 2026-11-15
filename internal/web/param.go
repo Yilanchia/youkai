@@ -197,6 +197,12 @@ func runParamProbe(ctx context.Context, env *Env, args map[string]any, adaptive 
 		if classes["crlf"] && !p.hits["crlf"] {
 			p.probeCRLF(original)
 		}
+		if p.budget <= 0 {
+			break
+		}
+		if classes["header"] && !p.hits["header"] {
+			p.probeHeaderReflection(original)
+		}
 	}
 
 	label := "param"
@@ -402,7 +408,7 @@ func normaliseClasses(in []string) (map[string]bool, error) {
 	out := map[string]bool{}
 	for _, c := range in {
 		switch strings.ToLower(strings.TrimSpace(c)) {
-		case "sqli", "ssti", "ssrf", "path", "cmdi", "xxe", "upload", "nosql", "crlf":
+		case "sqli", "ssti", "ssrf", "path", "cmdi", "xxe", "upload", "nosql", "crlf", "header":
 			out[strings.ToLower(strings.TrimSpace(c))] = true
 		case "deserialize":
 			// Deliberate refusal: there is no safe existence probe for an unsafe
@@ -410,7 +416,7 @@ func normaliseClasses(in []string) (map[string]bool, error) {
 			// so this class is handed to a human instead.
 			return nil, fmt.Errorf("web: 反序列化没有安全的存在性探针:youkai 不主动探测,请人工在授权下验证")
 		default:
-			return nil, fmt.Errorf("web: classes 支持 sqli/ssti/ssrf/path/cmdi/xxe/upload,收到 %q", c)
+			return nil, fmt.Errorf("web: classes 支持 sqli/ssti/ssrf/path/cmdi/xxe/upload/nosql/crlf/header,收到 %q", c)
 		}
 	}
 	if len(out) == 0 {

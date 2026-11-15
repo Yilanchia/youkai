@@ -314,7 +314,19 @@ func secretsCapability(ctx context.Context, env *Env, args map[string]any) (ledg
 		bySeverity[hit.Severity]++
 		byClass[hit.Class]++
 	}
-	obs.Findings = append(obs.Findings, secretFindings(hits, root)...)
+	// A sample built to mislead makes every string-derived hit a surface claim.
+	// The label decides whether these stay findings or become notes.
+	blind := blindForPath(root)
+	surface, blindNotes := blind.applyToFindings(secretFindings(hits, root))
+	obs.Findings = append(obs.Findings, surface...)
+	obs.Facts = append(obs.Facts, blindNotes...)
+	if blind.blinded() {
+		obs.Facts = append(obs.Facts, ledger.FactSeed{
+			Statement: "反致盲:本样本被判为 " + string(blind.Level) +
+				",基于字符串/正则的凭据命中已降档为表面证据;需要结构或人工复核才能定级",
+			Tags: []string{"blinded", "surface-only"},
+		})
+	}
 
 	statement := fmt.Sprintf(
 		"secrets: %s 扫描 %d 个文件,命中 %d 处(critical=%d high=%d medium=%d),仅输出脱敏预览、未验证凭据有效性",

@@ -756,6 +756,18 @@ func (f *fakeStore) ListHypotheses(_ context.Context, _ int64, state string) ([]
 	return out, nil
 }
 
+func (f *fakeStore) SetIntentDeps(_ context.Context, _, id int64, deps []int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.intents {
+		if f.intents[i].ID == id {
+			f.intents[i].Deps = deps
+			return nil
+		}
+	}
+	return nil
+}
+
 func (f *fakeStore) SetHypothesisState(_ context.Context, _, id int64, state, note string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

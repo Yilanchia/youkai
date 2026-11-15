@@ -57,6 +57,14 @@ var (
 // order is the order the UI and prompts present.
 var registry = []Capability{
 	{
+		Name: "binflow",
+		Description: "Pair an input point (argv/recv/read/getenv) with a dangerous call (system/exec/strcpy/sprintf/printf) " +
+			"and emit code-only hypotheses. Static symbols only: no execution, no emulation, exploitability stays human. | " +
+			"中文:输入点→危险调用的符号级可达性,产出 code-only 线索;不执行、不模拟,可利用性交人工。",
+		Tier: gate.TierReadOnly,
+		Run:  binflowCapability,
+	},
+	{
 		Name: "blind_screen",
 		Description: "Measure whether a sample was built to mislead an analyser: poisoned strings, noise volume, " +
 			"anti-debug vocabulary, packer signatures, entropy. Emits a confidence label (clean / suspected-blinded / " +

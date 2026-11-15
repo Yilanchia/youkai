@@ -144,3 +144,52 @@ func withParamValueRaw(rawURL, name, value string) (string, error) {
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
+
+// probeHeaderReflection looks for a header-looking value echoed into the body.
+//
+// Different from the CRLF probe: there the injected header appears in the RESPONSE
+// HEADERS (an actual header injection). Here the value comes back inside the body,
+// where it can reach a log viewer or an admin page. Only existence is judged.
+func (p *paramProbe) probeHeaderReflection(original string) {
+	marker := "youkai-hdr-" + randomToken()[:10]
+	payloads := []string{
+		marker,
+		"1.2.3.4, " + marker,
+	}
+	for _, payload := range payloads {
+		if p.budget <= 0 {
+			break
+		}
+		target, err := withParamValue(p.rawURL, p.name, payload)
+		if err != nil {
+			return
+		}
+		res, err := p.request(target, "param:header")
+		if err != nil {
+			continue
+		}
+		body := res.Text()
+		if len(body) > maxMarkerBytes {
+			body = body[:maxMarkerBytes]
+		}
+		if strings.Contains(body, marker) {
+			p.hits["header"] = true
+			p.b.finding(ledger.FindingSeed{
+				Title:    "参数值被反射进响应体(头部值直通)",
+				Severity: "low",
+				Kind:     "header-reflection",
+				Where:    p.rawURL,
+				Detail: "把带标记的值放进参数后,响应体里出现了同一个标记。若这个值本来取自 " +
+					"X-Forwarded-* / Host 之类的头,说明头被无条件信任并回显。只判存在,不构造利用。",
+				Counter: "回显本身不构成漏洞;危险程度取决于它是否进入日志、管理页或缓存键。",
+				Evidence: map[string]any{
+					"request_id": res.RequestID, "probe": "header", "marker_len": len(marker),
+				},
+			})
+			p.b.fact("头部反射存在性证据:标记出现在响应体", map[string]any{"request_id": res.RequestID}, "param:header")
+			return
+		}
+	}
+	p.b.fact("头部反射无命中:标记没有出现在响应体",
+		map[string]any{"request_id": lastRequestID(p)}, "param:header", "no-hit", "param")
+}

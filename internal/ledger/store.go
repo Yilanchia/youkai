@@ -1098,3 +1098,21 @@ func (s *Store) RecordConfigChange(ctx context.Context, engagement, operator, wh
 	}
 	return nil
 }
+
+// SetIntentDeps records that an intent must wait for others.
+//
+// Used by chain assembly when the comparison step already exists (a plain rule may
+// have derived it before the chain was assembled): the chain retro-fits the
+// dependency instead of creating a duplicate intent that would run twice.
+func (s *Store) SetIntentDeps(ctx context.Context, engagementID, id int64, deps []int64) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE intents SET deps = $3 WHERE engagement_id = $1 AND id = $2`,
+		engagementID, id, nonNilIDs(deps))
+	if err != nil {
+		return fmt.Errorf("ledger: set intent deps: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("ledger: intent %d not found", id)
+	}
+	return nil
+}

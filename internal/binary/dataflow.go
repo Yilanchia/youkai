@@ -197,6 +197,19 @@ func dataflowCapability(ctx context.Context, env *Env, args map[string]any) (led
 		}
 	}
 
+	// Same rule as secrets: a source tree that looks built to mislead makes every
+	// name-based reachability claim a surface claim. The label decides the grade.
+	if blind := blindForPath(root); blind.blinded() {
+		kept, notes := blind.applyToFindings(obs.Findings)
+		obs.Findings = kept
+		obs.Facts = append(obs.Facts, notes...)
+		obs.Facts = append(obs.Facts, newFact(
+			"反致盲:"+root+" 被判为 "+string(blind.Level)+
+				",数据流命中已降档为表面证据(符号名/字符串可能被投毒)",
+			map[string]any{"blind_level": string(blind.Level), "surface_only": true},
+			[]string{"blinded"}, nil))
+	}
+
 	statement := fmt.Sprintf(
 		"dataflow: %s 扫描源码 %d 个文件,危险 sink=%d 处,同函数可达候选=%d(启发式,未执行)",
 		root, len(files), sinkTotal, findings)

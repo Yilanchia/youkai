@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"strings"
 
@@ -71,6 +72,56 @@ func runOAuthAudit(ctx context.Context, env *Env, args map[string]any) (ledger.O
 					Anchors:  []string{"surface:" + discovery},
 				})
 			}
+			// ---- v0.15 additions: flow shape and scope width -----------------
+
+			// Implicit flow (response_type=token) is deprecated for browser clients:
+			// the access token lands in the URL fragment where scripts read it.
+			for _, rt := range cfg.ResponseTypesSupported {
+				if strings.Contains(strings.ToLower(rt), "token") {
+					b.finding(ledger.FindingSeed{
+						Title:    "OIDC 仍支持隐式流(response_type 含 token)",
+						Severity: "low",
+						Kind:     "oauth",
+						Where:    discovery,
+						Detail: "发现文档声明支持 " + rt + ":令牌会出现在跳转 URL 的 fragment 里," +
+							"浏览器端脚本可读。OAuth 2.1 已不再推荐。",
+						Counter:  "是否真的允许由服务端决定;需人工确认该 client 是否被公开客户端使用。",
+						Evidence: ev, Tags: []string{"oauth", "flow"},
+						Anchors: []string{"surface:" + discovery},
+					})
+					break
+				}
+			}
+
+			// A very wide scope surface is a configuration smell: it means one consent
+			// can hand out much more than the client needs.
+			if len(cfg.ScopesSupported) > 0 {
+				wide := []string{"admin", "write", "offline_access", "*"}
+				var hits []string
+				for _, sc := range cfg.ScopesSupported {
+					for _, w := range wide {
+						if strings.Contains(strings.ToLower(sc), w) {
+							hits = append(hits, sc)
+							break
+						}
+					}
+				}
+				if len(hits) >= 2 || len(cfg.ScopesSupported) > 20 {
+					b.finding(ledger.FindingSeed{
+						Title:    "OIDC scope 面过宽",
+						Severity: "low",
+						Kind:     "oauth",
+						Where:    discovery,
+						Detail: fmt.Sprintf("声明了 %d 个 scope,其中高权限/敏感的有 %s;"+
+							"一次同意可能授予远超所需的范围。",
+							len(cfg.ScopesSupported), strings.Join(hits, ",")),
+						Counter:  "scope 多不等于被滥用;需确认实际签发时是否做最小化裁剪。",
+						Evidence: ev, Tags: []string{"oauth", "scope"},
+						Anchors: []string{"surface:" + discovery},
+					})
+				}
+			}
+
 			if cfg.TokenEndpoint != "" {
 				b.asset("endpoint", cfg.TokenEndpoint)
 			}
@@ -143,6 +194,33 @@ func auditAuthorizeRequest(ctx context.Context, env *Env, b *obsBuilder, authori
 		})
 	}
 
+	// 2b) state quality, still read-only: a state that is short or obviously
+	// patterned cannot bind the callback to the session.
+	if st := q.Get("state"); st != "" {
+		if weakState(st) {
+			b.finding(ledger.FindingSeed{
+				Title:    "授权请求的 state 熵不足",
+				Severity: "low",
+				Kind:     "oauth",
+				Where:    authorizeURL,
+				Detail: fmt.Sprintf("state 长度 %d,字符集熵约 %.1f 位:太弱或明显有规律,"+
+					"无法可靠绑定回调与发起方会话。只做统计,不解码、不重放。", len(st), stateEntropy(st)),
+				Counter:  "CSRF 防护可能还依赖 SameSite cookie 或服务端会话;需人工确认。",
+				Evidence: ev, Tags: []string{"oauth", "csrf", "entropy"},
+				Anchors: []string{"surface:" + authorizeURL},
+			})
+		}
+	}
+
+	// 2c) response_mode combinations that leak material into URLs.
+	if rm := q.Get("response_mode"); rm != "" {
+		lower := strings.ToLower(rm)
+		if lower == "query" || lower == "fragment" {
+			b.fact("授权请求使用 response_mode="+rm+"(令牌或 code 可能出现在 URL 中)",
+				ev, "oauth", "flow")
+		}
+	}
+
 	// 3) ONE redirect_uri observation: append a path segment to the registered
 	// redirect_uri and see whether the server still accepts it (no code exchange,
 	// no token, nothing followed).
@@ -196,4 +274,35 @@ func firstRequestID(ids []string) string {
 		return ""
 	}
 	return ids[0]
+}
+
+// weakState flags a state value that cannot be doing CSRF binding properly.
+func weakState(s string) bool {
+	if len(s) < 16 {
+		return true
+	}
+	// A single repeated character or a short cycle is not entropy.
+	distinct := map[rune]bool{}
+	for _, r := range s {
+		distinct[r] = true
+	}
+	return len(distinct) < 6
+}
+
+// stateEntropy estimates the per-character entropy of the value.
+func stateEntropy(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	counts := map[rune]int{}
+	for _, r := range s {
+		counts[r]++
+	}
+	var h float64
+	n := float64(len(s))
+	for _, c := range counts {
+		p := float64(c) / n
+		h -= p * math.Log2(p)
+	}
+	return h * n / 8 // rough bits of information
 }
