@@ -153,6 +153,38 @@ func runParamProbe(ctx context.Context, env *Env, args map[string]any, adaptive 
 		if classes["ssti"] && !p.hits["ssti"] {
 			p.probeSSTI(variant, original, baseline)
 		}
+		if p.budget <= 0 {
+			break
+		}
+		// The wider classes are single-shot existence checks, not variants: they
+		// place one payload, observe one signal, and stop.
+		if classes["ssrf"] && !p.hits["ssrf"] {
+			p.probeSSRF(original)
+		}
+		if p.budget <= 0 {
+			break
+		}
+		if classes["path"] && !p.hits["path"] {
+			p.probePathTraversal(original, argString(args, "marker"))
+		}
+		if p.budget <= 0 {
+			break
+		}
+		if classes["cmdi"] && !p.hits["cmdi"] {
+			p.probeCMDI(original)
+		}
+		if p.budget <= 0 {
+			break
+		}
+		if classes["xxe"] && !p.hits["xxe"] {
+			p.probeXXE(original)
+		}
+		if p.budget <= 0 {
+			break
+		}
+		if classes["upload"] && !p.hits["upload"] {
+			p.probeUpload(original)
+		}
 	}
 
 	label := "param"
@@ -358,12 +390,15 @@ func normaliseClasses(in []string) (map[string]bool, error) {
 	out := map[string]bool{}
 	for _, c := range in {
 		switch strings.ToLower(strings.TrimSpace(c)) {
-		case "sqli":
-			out["sqli"] = true
-		case "ssti":
-			out["ssti"] = true
+		case "sqli", "ssti", "ssrf", "path", "cmdi", "xxe", "upload":
+			out[strings.ToLower(strings.TrimSpace(c))] = true
+		case "deserialize":
+			// Deliberate refusal: there is no safe existence probe for an unsafe
+			// deserializer. "Send a gadget and see" is exploitation, not detection,
+			// so this class is handed to a human instead.
+			return nil, fmt.Errorf("web: 反序列化没有安全的存在性探针:youkai 不主动探测,请人工在授权下验证")
 		default:
-			return nil, fmt.Errorf("web: classes 只支持 sqli/ssti,收到 %q", c)
+			return nil, fmt.Errorf("web: classes 支持 sqli/ssti/ssrf/path/cmdi/xxe/upload,收到 %q", c)
 		}
 	}
 	if len(out) == 0 {

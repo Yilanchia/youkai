@@ -17,27 +17,6 @@ import (
 // becomes evidence by itself - if the probe does not hit, the lead is marked
 // unconfirmed and reported as such (see ConfirmHypothesis).
 
-// probeForHypothesis maps a lead to the capability that can settle it.
-//
-// Only sinks with a real existence check are mapped. A lead about command execution
-// or deserialisation is worth remembering but there is no safe "is it there?" probe
-// for it, so it stays a note for the human.
-func probeForHypothesis(h ledger.Hypothesis) (capability string, args map[string]any, ok bool) {
-	if strings.TrimSpace(h.Entry) == "" {
-		return "", nil, false
-	}
-	switch h.Sink {
-	case "sql-concat":
-		if h.Param == "" {
-			return "", nil, false
-		}
-		return "param", map[string]any{"param": h.Param, "classes": []string{"sqli"}, "hypothesis_id": h.ID}, true
-	case "redirect":
-		return "redirect_check", map[string]any{"hypothesis_id": h.ID}, true
-	}
-	return "", nil, false
-}
-
 // baseURL picks the engagement's first in-scope origin.
 func baseURL(scopeRaw []byte) string {
 	var sc map[string]any

@@ -38,6 +38,16 @@ func counterFor(kind string) string {
 		return "角色差异可能是设计如此(公开接口/不同视图);要定级需确认 B 身份拿到的是同一份数据而不是通用页面。"
 	case "waf":
 		return "只观察了拦截行为,未做绕过;拦截状态变化也可能来自限速或缓存。"
+	case "ssrf":
+		return "canary 被触达只证明服务端会对可控 URL 发请求;能否访问内网/云元数据、能读到什么,均需人工在授权下判断。"
+	case "xxe":
+		return "只证明 XML 解析器展开了外部实体;能否读本地文件、是否有回显,需人工验证。"
+	case "path-traversal":
+		return "标记文件可达说明路径未被约束;实际影响取决于进程权限与目录布局,需人工判定。"
+	case "cmdi":
+		return "时延可能来自网络抖动或服务端限速;要定级需可重复的多次测量,当前只做了一次存在性判断。"
+	case "upload":
+		return "接受文本文件不代表可执行:是否危险取决于类型校验、存储位置与后续访问方式。"
 	case "binary":
 		return "静态结论未执行样本;要定级需动态确认可达路径,当前仍为候选。"
 	case "account":

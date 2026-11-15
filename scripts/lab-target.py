@@ -17,8 +17,11 @@ Everything is in-memory and per-process: no persistence, no real accounts.
 """
 import http.server
 import json
+import re
 import socketserver
 import sys
+import time
+import urllib.request
 from urllib.parse import parse_qs
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 18080
@@ -62,6 +65,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/.git/config":
             self._send(200, "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n", "text/plain")
             return
+        if path == "/fetch":
+            # SSRF fixture: fetch whatever URL it is handed.
+            target = query.get("next", [""])[0]
+            if target:
+                try:
+                    urllib.request.urlopen(target, timeout=3).read(1)
+                except Exception:
+                    pass
+            self._send(200, "fetched", "text/plain")
+            return
+
+        if path == "/download":
+            # Path traversal fixture: any ../ or ....// is served the marker file.
+            name = query.get("file", [""])[0]
+            if ".." in name:
+                self._send(200, "youkai-path-marker", "text/plain")
+                return
+            self._send(404, "not found", "text/plain")
+            return
+
+        if path == "/ping":
+            # Command injection fixture: a sleep in the value makes the server pause.
+            host = query.get("host", [""])[0]
+            if "sleep" in host:
+                time.sleep(2.1)
+            self._send(200, "pong", "text/plain")
+            return
+
+        if path == "/xml":
+            # XXE fixture: any external entity in the body gets fetched.
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8", "replace")
+            for m in re.finditer(r'SYSTEM\s+"([^"]+)"', body):
+                try:
+                    urllib.request.urlopen(m.group(1), timeout=3).read(1)
+                except Exception:
+                    pass
+            self._send(200, "<ok/>", "application/xml")
+            return
+
         if path == "/sql":
             # Deliberately vulnerable: a quote in q reaches a concatenated query.
             # This is what the whitebox lead about /sql is supposed to find.
@@ -171,6 +213,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 ("Set-Cookie", "sid=sess-" + user + "; Path=/; HttpOnly; SameSite=Lax"),
                 ("Set-Cookie", "jwt=" + WEAK_JWT + "; Path=/"),
             ])
+            return
+        if path == "/xml":
+            # XXE fixture: fetch every SYSTEM identifier in the body.
+            for m in re.finditer(r'SYSTEM\s+"([^"]+)"', body):
+                try:
+                    urllib.request.urlopen(m.group(1), timeout=3).read(1)
+                except Exception:
+                    pass
+            self._send(200, "<ok/>", "application/xml")
+            return
+        if path == "/upload":
+            # Upload fixture: accept anything, echo a slice so the caller can tell it
+            # was stored (the probe only sends a text marker).
+            marker = ""
+            for m in re.finditer(r"youkai upload existence marker ([0-9a-f]+)", body):
+                marker = m.group(1)
+            self._send(201, "stored " + marker, "text/plain")
             return
         if path == "/api/orders":
             if not self._cookie("sid"):
