@@ -24,7 +24,8 @@ Set-Location $root
 $pgDir   = "D:\tools\pg\pgsql"
 $pgData  = Join-Path $root ".pgsql\data"
 $pgLog   = Join-Path $root ".pgsql\server.log"
-$dsn     = "postgres://youkai:youkai_dev_pw@127.0.0.1:55432/youkai?sslmode=disable"
+$pgPort  = if ($env:YOUKAI_PGPORT) { [int]$env:YOUKAI_PGPORT } else { 55432 }
+$dsn     = "postgres://youkai:youkai_dev_pw@127.0.0.1:$pgPort/youkai?sslmode=disable"
 $dbName  = "youkai_acceptance"
 $labPort = 18080
 $apiPort = 8791
@@ -67,17 +68,17 @@ function Wait-Http($url, $timeoutSec = 30) {
 Write-Host "`n== postgres ==" -ForegroundColor Cyan
 $env:PGPASSWORD = "youkai_dev_pw"
 $pgUp = $false
-try { & "$pgDir\bin\pg_isready.exe" -h 127.0.0.1 -p 55432 | Out-Null; $pgUp = ($LASTEXITCODE -eq 0) } catch {}
+try { & "$pgDir\bin\pg_isready.exe" -h 127.0.0.1 -p $pgPort | Out-Null; $pgUp = ($LASTEXITCODE -eq 0) } catch {}
 if (-not $pgUp) {
     Write-Host "starting postgres..."
-    & "$pgDir\bin\pg_ctl.exe" -D $pgData -l $pgLog -o "-p 55432 -c listen_addresses=127.0.0.1" start 2>&1 | Out-Null
+    & "$pgDir\bin\pg_ctl.exe" -D $pgData -l $pgLog -o "-p $pgPort -c listen_addresses=127.0.0.1" start 2>&1 | Out-Null
     Start-Sleep -Seconds 3
 }
-& "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d postgres -c "DROP DATABASE IF EXISTS $dbName;" 2>&1 | Out-Null
-& "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d postgres -c "CREATE DATABASE $dbName;" 2>&1 | Out-Null
+& "$pgDir\bin\psql.exe" -h 127.0.0.1 -p $pgPort -U youkai -d postgres -c "DROP DATABASE IF EXISTS $dbName;" 2>&1 | Out-Null
+& "$pgDir\bin\psql.exe" -h 127.0.0.1 -p $pgPort -U youkai -d postgres -c "CREATE DATABASE $dbName;" 2>&1 | Out-Null
 Assert ($LASTEXITCODE -eq 0) "fresh acceptance database created"
 
-$accDsn = "postgres://youkai:youkai_dev_pw@127.0.0.1:55432/$dbName`?sslmode=disable"
+$accDsn = "postgres://youkai:youkai_dev_pw@127.0.0.1:$pgPort/$dbName`?sslmode=disable"
 
 # ---- 1. build + start the platform ----------------------------------------
 Write-Host "`n== build ==" -ForegroundColor Cyan
@@ -419,10 +420,10 @@ try {
     Assert ($r.Body.error) "the failing test explains itself"
 
     # A key must not have leaked into the settings row or the audit detail.
-    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc `
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p $pgPort -U youkai -d $dbName -tAc `
         "SELECT coalesce(value::text,'') || coalesce(encode(secret_enc,'hex'),'') FROM settings WHERE key='llm';" 2>&1 | Out-String
     Assert ($out -notmatch "sk-acceptance") "the settings row does not hold the key in the clear"
-    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc `
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p $pgPort -U youkai -d $dbName -tAc `
         "SELECT detail::text FROM audit_log WHERE purpose='config' AND url='config:llm' ORDER BY id DESC LIMIT 1;" 2>&1 | Out-String
     Assert ($out -match "lab-fake-model") "the LLM change is audited"
     Assert ($out -notmatch "sk-acceptance") "the LLM audit row carries no key"
@@ -459,7 +460,7 @@ try {
     $r = Api "PUT" "/api/engagements/$engId2/scope" @{ scope = $widened; updated_by = "acceptance" }
     Assert ($r.Code -eq 200 -and $r.Body.changed -eq $true) "passport edit applied"
     Assert ($r.Body.widened -eq $true) "the API reports the change as widening"
-    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc `
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p $pgPort -U youkai -d $dbName -tAc `
         "SELECT detail::text FROM audit_log WHERE purpose='config' AND url='config:scope' AND engagement LIKE 'cfg-%' ORDER BY id DESC LIMIT 1;" 2>&1 | Out-String
     Assert ($out -match "allow_object_seeding") "scope widening is audited"
     Assert ($out -match "acceptance") "the scope audit names the operator"
@@ -496,7 +497,7 @@ try {
     Assert ($snap1.Code -eq 201) "snapshot created"
     Assert ($snap1.Body.sha256.Length -eq 64) "snapshot carries a sha256 anchor"
     $snap1Id = $snap1.Body.snapshot.id
-    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc `
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p $pgPort -U youkai -d $dbName -tAc `
         "UPDATE report_snapshots SET content_sha256='tampered' WHERE id=$snap1Id;" 2>&1 | Out-String
     Assert ($out -match "append-only") "the snapshot table refuses UPDATE at the database level"
 
@@ -709,11 +710,11 @@ try {
 
     # ---- 16. database-level invariants -------------------------------------
     Write-Host "`n== database guards ==" -ForegroundColor Cyan
-    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE audit_log SET status=999;" 2>&1 | Out-String
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p $pgPort -U youkai -d $dbName -tAc "UPDATE audit_log SET status=999;" 2>&1 | Out-String
     Assert ($out -match "append-only") "audit_log refuses UPDATE at the database level"
-    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE findings SET state='verified';" 2>&1 | Out-String
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p $pgPort -U youkai -d $dbName -tAc "UPDATE findings SET state='verified';" 2>&1 | Out-String
     Assert ($out -match "operator verdict") "candidate->verified is refused without an operator verdict"
-    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p 55432 -U youkai -d $dbName -tAc "UPDATE intents SET approved=true;" 2>&1 | Out-String
+    $out = & "$pgDir\bin\psql.exe" -h 127.0.0.1 -p $pgPort -U youkai -d $dbName -tAc "UPDATE intents SET approved=true;" 2>&1 | Out-String
     Assert ($out -match "operator approval") "approved=true is refused without an approval row"
 
     # ---- 8. findings verdict path ------------------------------------------

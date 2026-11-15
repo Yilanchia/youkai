@@ -8,6 +8,7 @@ import (
 	"youkai/internal/binary"
 	"youkai/internal/gate"
 	"youkai/internal/web"
+	"youkai/internal/whitebox"
 )
 
 // TestEveryGatedCapabilityIsReachable is the registry invariant that keeps the
@@ -29,7 +30,7 @@ func TestEveryGatedCapabilityIsReachable(t *testing.T) {
 		}
 	}
 
-	var webNames, binaryNames, accountNames []string
+	var webNames, binaryNames, accountNames, whiteboxNames []string
 	for _, c := range web.Registry() {
 		webNames = append(webNames, c.Name)
 	}
@@ -39,9 +40,13 @@ func TestEveryGatedCapabilityIsReachable(t *testing.T) {
 	for _, c := range accounts.Registry() {
 		accountNames = append(accountNames, c.Name)
 	}
+	for _, c := range whitebox.Registry() {
+		whiteboxNames = append(whiteboxNames, c.Name)
+	}
 	add("web", webNames)
 	add("binary", binaryNames)
 	add("accounts", accountNames)
+	add("whitebox", whiteboxNames)
 
 	gated := append(gate.ReadOnlyCapabilities(), gate.ProofCapabilities()...)
 	sort.Strings(gated)

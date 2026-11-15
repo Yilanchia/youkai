@@ -53,6 +53,7 @@ func (e *Engine) derive(ctx context.Context) (int, error) {
 		e.ruleGitConfigProbe,
 		e.ruleSurfaceScan,
 		e.ruleAPISpec,
+		e.ruleWhiteboxProbe,
 		e.ruleArtifactChain,
 		e.ruleBolaCompare,
 		e.ruleDocSurfaceMatrix,

@@ -349,6 +349,13 @@ func (s *Server) executeIntent(w http.ResponseWriter, r *http.Request, eng ledge
 		writeErr(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
+	// A probe that was derived from a whitebox lead settles that lead here: the
+	// tier-2 path executes through this route, not through the engine loop.
+	if hid := engine.HypothesisIDOf(it.Args); hid > 0 {
+		var store engine.Store = s.cfg.Store
+		engine.ConfirmProbe(ctx, &store, eng.ID, hid, len(res.FindingIDs), obs.RequestIDs)
+	}
+
 	trace := fmt.Sprintf("human step executed: operator=%s basis=%q approval=%d capability=%s facts=%d findings=%d",
 		ap.Operator, ap.Basis, ap.ID, it.Capability, res.NewFacts, len(res.FindingIDs))
 	if len(obs.RequestIDs) > 0 {

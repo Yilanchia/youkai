@@ -44,6 +44,10 @@ type Store interface {
 	ActiveMandate(ctx context.Context, engagementID int64) (ledger.Mandate, error)
 	// MandateUsage counts requests actually sent since the mandate was activated.
 	MandateUsage(ctx context.Context, engagement string, since time.Time) (int, error)
+	// Whitebox leads: the engine turns open ones into probes and records what the
+	// probe found. A lead never becomes evidence here.
+	ListHypotheses(ctx context.Context, engagementID int64, state string) ([]ledger.Hypothesis, error)
+	SetHypothesisState(ctx context.Context, engagementID, id int64, state, note string) error
 }
 
 // Dispatcher runs one capability. The API layer builds it from the web and
@@ -543,6 +547,12 @@ func (e *Engine) execOne(ctx context.Context, it ledger.Intent, runID int64, man
 	}
 	rec.Trace = trace
 
+	// A probe derived from a whitebox lead settles that lead: hit -> candidate,
+	// miss -> unconfirmed. The lead itself never becomes a finding.
+	if id := hypothesisIDOf(it.Args); id > 0 {
+		e.ConfirmHypothesis(ctx, id, rec.Findings, rec.RequestIDs)
+	}
+
 	if err := e.cfg.Store.SetIntentStatus(ctx, e.cfg.EngagementID, it.ID, ledger.StatusDone); err != nil {
 		return e.fail(ctx, it, rec, "mark done: "+err.Error())
 	}
@@ -667,4 +677,17 @@ func (e *Engine) priorForPrompt() []ledger.TraceHit {
 // tierAutonomous reports whether the gate would let this intent run on its own.
 func tierAutonomous(e *Engine, it ledger.Intent) bool {
 	return e.effectiveTier(it).AutonomousOK()
+}
+
+// hypothesisIDOf reads the lead id a probe was derived for (0 when none).
+func hypothesisIDOf(args map[string]any) int64 {
+	switch v := args["hypothesis_id"].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return 0
 }

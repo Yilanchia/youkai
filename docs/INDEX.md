@@ -26,6 +26,7 @@
 | [DEVPLAN-v0.10](DEVPLAN-v0.10.md) | 已实现 |
 | [DEVPLAN-v0.11](DEVPLAN-v0.11.md) | 已实现 |
 | [DEVPLAN-v0.12](DEVPLAN-v0.12.md) | 已实现 |
+| [DEVPLAN-v0.13](DEVPLAN-v0.13.md) | 已实现 |
 
 ## 进度(IMPL-STATUS)
 
@@ -43,6 +44,7 @@
 | [IMPL-STATUS-v0.10](IMPL-STATUS-v0.10.md) | 现行 | 极简向导式 UX(只问网址) |
 | [IMPL-STATUS-v0.11](IMPL-STATUS-v0.11.md) | 现行 | 对话式 + 人签委托书自治 |
 | [IMPL-STATUS-v0.12](IMPL-STATUS-v0.12.md) | 现行 | 拆签名墙(UI 点头)+ 对话历史 + 点头卡 |
+| [IMPL-STATUS-v0.13](IMPL-STATUS-v0.13.md) | 现行 | 白盒源码分析(代码线索指导黑盒验证) |
 | [ADR-006](ADR-006-approve-not-sign.md) | 生效 | 档 2 默认 UI 点头,签名降级为可选(取代 ADR-005 的委托书) |
 | [ADR-005](ADR-005-conversational-and-mandate.md) | 部分被覆盖 | 对话面板保留;委托书改为 opt-in |
 

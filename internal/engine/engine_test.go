@@ -32,6 +32,7 @@ type fakeStore struct {
 	mandate    ledger.Mandate
 	mandateErr error
 	mandateUse int
+	hypotheses []ledger.Hypothesis
 	scope      json.RawMessage
 }
 
@@ -740,4 +741,32 @@ func (f *fakeStore) MandateUsage(_ context.Context, _ string, _ time.Time) (int,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.mandateUse, nil
+}
+
+// ListHypotheses / SetHypothesisState back the whitebox rule in tests.
+func (f *fakeStore) ListHypotheses(_ context.Context, _ int64, state string) ([]ledger.Hypothesis, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]ledger.Hypothesis, 0, len(f.hypotheses))
+	for _, h := range f.hypotheses {
+		if state == "" || h.State == state {
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) SetHypothesisState(_ context.Context, _, id int64, state, note string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.hypotheses {
+		if f.hypotheses[i].ID == id {
+			f.hypotheses[i].State = state
+			if note != "" {
+				f.hypotheses[i].Note += " | " + note
+			}
+			return nil
+		}
+	}
+	return nil
 }

@@ -391,6 +391,13 @@ func (s *Server) handleEngagementScoped(w http.ResponseWriter, r *http.Request) 
 		s.handleScope(w, r, eng)
 	case len(tail) >= 1 && tail[0] == "accounts":
 		s.handleAccounts(w, r, eng)
+	case len(tail) >= 1 && tail[0] == "hypotheses":
+		rows, err := s.cfg.Store.ListHypotheses(r.Context(), eng.ID, r.URL.Query().Get("state"))
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rows)
 	case len(tail) >= 1 && tail[0] == "mandate":
 		s.handleMandate(w, r, eng, tail[1:])
 	case len(tail) >= 1 && tail[0] == "chat":

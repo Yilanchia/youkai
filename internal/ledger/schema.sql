@@ -295,8 +295,20 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 CREATE INDEX IF NOT EXISTS chat_messages_eng_idx ON chat_messages (engagement_id, id);
 
+-- chat history is a record, but it must still disappear with its engagement.
+--
+-- A plain "refuse everything" trigger also refuses the ON DELETE CASCADE from the
+-- parent row, which makes an engagement undeletable (found the hard way: test
+-- cleanup hung). UPDATE is always refused; DELETE is allowed only when it comes
+-- from the cascading parent, which pg_trigger_depth() can see.
 CREATE OR REPLACE FUNCTION youkai_chat_append_only() RETURNS trigger AS $$
 BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    RAISE EXCEPTION 'chat_messages is append-only';
+  END IF;
+  IF pg_trigger_depth() > 1 THEN
+    RETURN OLD;          -- cascade from engagements: allowed
+  END IF;
   RAISE EXCEPTION 'chat_messages is append-only';
 END;
 $$ LANGUAGE plpgsql;
@@ -305,3 +317,26 @@ DROP TRIGGER IF EXISTS chat_messages_append_only_trg ON chat_messages;
 CREATE TRIGGER chat_messages_append_only_trg
   BEFORE UPDATE OR DELETE ON chat_messages
   FOR EACH ROW EXECUTE FUNCTION youkai_chat_append_only();
+
+-- Whitebox hypotheses (v0.13). A lead, not a finding: the ladder is
+-- hypothesis -> candidate -> verified, and rows here only ever move along it with
+-- evidence recorded in `note`. Source text is never stored - only file:line.
+CREATE TABLE IF NOT EXISTS hypotheses (
+  id            BIGSERIAL PRIMARY KEY,
+  engagement_id BIGINT NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
+  kind          TEXT NOT NULL,
+  entry         TEXT NOT NULL DEFAULT '',
+  param         TEXT NOT NULL DEFAULT '',
+  sink          TEXT NOT NULL DEFAULT '',
+  path          TEXT NOT NULL DEFAULT '',
+  confidence    TEXT NOT NULL DEFAULT 'code-only',
+  note          TEXT NOT NULL DEFAULT '',
+  file          TEXT NOT NULL DEFAULT '',
+  line          INT NOT NULL DEFAULT 0,
+  state         TEXT NOT NULL DEFAULT 'open'
+                CHECK (state IN ('open','probing','unconfirmed','candidate')),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (engagement_id, kind, entry, param, sink, path)
+);
+
+CREATE INDEX IF NOT EXISTS hypotheses_eng_idx ON hypotheses (engagement_id, state, id);

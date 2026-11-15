@@ -110,6 +110,7 @@ var table = map[string]Tier{
 	"api_spec":           TierReadOnly,
 	"graphql_introspect": TierReadOnly,
 	"jwt_audit":          TierReadOnly,
+	"code_ingest":        TierReadOnly,
 	"oauth_audit":        TierReadOnly,
 	// Account layer: the read-only view of identities is tier 1; anything that
 	// authenticates or writes on the target is tier 2.

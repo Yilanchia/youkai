@@ -21,6 +21,7 @@ import (
 	"youkai/internal/discipline"
 	"youkai/internal/ledger"
 	"youkai/internal/web"
+	"youkai/internal/whitebox"
 )
 
 // Dispatcher routes a capability to the package that owns it, with a Guard built
@@ -100,6 +101,15 @@ func (d *Dispatcher) Run(ctx context.Context, engagementID int64, capability str
 			Engagement:   eng.Name,
 			ManifestPath: d.accountsPath(),
 			SessionDir:   d.sessionDir(),
+		}, args)
+	}
+	if c, ok := whitebox.Lookup(capability); ok {
+		// Local, read-only source analysis: no guard, because there is nothing to
+		// guard - this capability opens files, not sockets.
+		return c.Run(ctx, &whitebox.Env{
+			Store:        d.Store,
+			EngagementID: eng.ID,
+			Engagement:   eng.Name,
 		}, args)
 	}
 	if c, ok := binary.Lookup(capability); ok {

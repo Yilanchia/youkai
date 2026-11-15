@@ -62,6 +62,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/.git/config":
             self._send(200, "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n", "text/plain")
             return
+        if path == "/sql":
+            # Deliberately vulnerable: a quote in q reaches a concatenated query.
+            # This is what the whitebox lead about /sql is supposed to find.
+            q = query.get("q", [""])[0]
+            if "'" in q or '"' in q:
+                self._send(500, "You have an error in your SQL syntax; check the manual", "text/plain")
+                return
+            self._send(200, "results for " + q, "text/plain")
+            return
+
         if path == "/search":
             q = query.get("q", [""])[0]
             self._send(200,
