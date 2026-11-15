@@ -84,6 +84,10 @@ type Server struct {
 	running map[int64]int64 // engagement id -> current run id
 	runMu   sync.Map        // runID -> *runState
 	started time.Time
+	// llmProblem is why the configured model did not load (a key that no longer
+	// decrypts, a rejected config). Empty means "nothing to report".
+	llmMu      sync.Mutex
+	llmProblem string
 }
 
 type runState struct {
@@ -269,7 +273,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	llm, _ := s.llmView(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"version": Version,
 		"llm":     llm,
 		"provider": map[string]any{
@@ -282,7 +286,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"proof":     gate.ProofCapabilities(),
 		},
 		"artifacts": s.cfg.ArtifactDir,
-	})
+	}
+	// The aggregate view carries the same explanation as /api/config/llm, so the UI
+	// can show it on first paint without a second request.
+	if problem := s.LLMProblem(); problem != "" {
+		payload["problem"] = problem
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) handleEngagements(w http.ResponseWriter, r *http.Request) {
@@ -501,8 +511,15 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request, eng ledger.Eng
 		writeErr(w, http.StatusConflict, "engagement %d already has run %d in flight", eng.ID, existing)
 		return
 	}
+	// A caller that only says "go" (the conversation's confirm button) gets the
+	// passport's own surfaces as seeds. Without this the run bootstraps from an
+	// empty list and reports idle - the "started but did nothing" symptom.
+	seeds := body.SeedURLs
+	if len(seeds) == 0 {
+		seeds = passportSurfaces(passport)
+	}
 	run, err := s.cfg.Store.CreateRun(r.Context(), eng.ID, map[string]any{
-		"seed_urls": body.SeedURLs, "max_steps": body.MaxSteps, "trigger": "api",
+		"seed_urls": seeds, "max_steps": body.MaxSteps, "trigger": "api",
 	})
 	if err != nil {
 		s.mu.Unlock()
@@ -815,6 +832,34 @@ func scopeWarnings(sc discipline.Scope) []string {
 				"include 里的 %s 是环回地址,但没开 allow_private:所有请求都会被 guard 拦断", host))
 			break
 		}
+	}
+	return out
+}
+
+// passportSurfaces extracts concrete URLs from a passport's include list.
+//
+// A bare host gets a scheme (http for loopback, https otherwise), which is the same
+// guess the engine's own base-URL logic makes.
+func passportSurfaces(sc discipline.Scope) []string {
+	var out []string
+	for _, inc := range sc.Include {
+		inc = strings.TrimSpace(inc)
+		if inc == "" || strings.Contains(inc, "*") {
+			continue
+		}
+		if !strings.Contains(inc, "://") {
+			host := inc
+			if i := strings.IndexAny(host, "/?#"); i >= 0 {
+				host = host[:i]
+			}
+			scheme := "https"
+			if strings.HasPrefix(host, "127.") || strings.HasPrefix(host, "10.") ||
+				strings.HasPrefix(host, "192.168.") || strings.HasPrefix(host, "localhost") {
+				scheme = "http"
+			}
+			inc = scheme + "://" + host
+		}
+		out = append(out, inc)
 	}
 	return out
 }

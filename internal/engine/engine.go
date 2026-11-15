@@ -271,8 +271,13 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 					rep.Reason = err.Error()
 					return rep, err
 				}
-				return finish(StopNeedsApproval,
-					fmt.Sprintf("%d intent(s) need a human: %s", len(blocked), blocked[0].Capability))
+				// Name the step AND what it unblocks: "1 intent needs a human" alone
+				// reads like a dead end when a dependent step is waiting behind it.
+				reason := fmt.Sprintf("%d intent(s) need a human: %s", len(blocked), blocked[0].Capability)
+				if waiting := e.waitingOnApproval(g); len(waiting) > 0 {
+					reason = waiting[0]
+				}
+				return finish(StopNeedsApproval, reason)
 			}
 			if e.cfg.Proposer != nil && llmRounds < defaultMaxLLMRound {
 				llmRounds++
@@ -284,6 +289,12 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 					rep.Derived += n
 					continue
 				}
+			}
+			// A run that stops with nothing done must say WHY. The common case is a
+			// dependent step waiting on a tier-2 step that a human has not approved
+			// yet - from the operator's chair that used to look like "it did nothing".
+			if waiting := e.waitingOnApproval(g); len(waiting) > 0 {
+				return finish(StopNeedsApproval, waiting[0])
 			}
 			if rep.Reason == "" {
 				rep.Reason = "no claimable intent and no derivable next step"
@@ -724,4 +735,45 @@ func hypothesisIDOf(args map[string]any) int64 {
 		return int64(v)
 	}
 	return 0
+}
+
+// waitingOnApproval explains an empty work list in terms the operator can act on.
+//
+// It looks for a step that is parked for approval and has dependants: approving it
+// is what unblocks the run. Returns a sentence per blocked dependency owner.
+func (e *Engine) waitingOnApproval(g ledger.GraphView) []string {
+	// A dependency is "waiting on a human" if it is already parked OR if it is a
+	// tier-2 step that has not run yet - at the moment this is called, parking may
+	// not have happened for this round.
+	parkedByID := map[int64]ledger.Intent{}
+	for _, it := range g.Intents {
+		if it.Status == ledger.StatusNeedsApproval {
+			parkedByID[it.ID] = it
+			continue
+		}
+		if it.Status == ledger.StatusTodo && !e.effectiveTier(it).AutonomousOK() {
+			parkedByID[it.ID] = it
+		}
+	}
+	if len(parkedByID) == 0 {
+		return nil
+	}
+	seen := map[int64]bool{}
+	var out []string
+	for _, it := range g.Intents {
+		if it.Status != ledger.StatusTodo {
+			continue
+		}
+		for _, d := range it.Deps {
+			p, ok := parkedByID[d]
+			if !ok || seen[p.ID] {
+				continue
+			}
+			seen[p.ID] = true
+			out = append(out, fmt.Sprintf(
+				"还在等一个批准:#%d %s(批准后 #%d %s 会自动接着跑)",
+				p.ID, p.Capability, it.ID, it.Capability))
+		}
+	}
+	return out
 }

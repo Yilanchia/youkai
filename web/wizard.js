@@ -157,6 +157,10 @@ function openTaskWizard(mode) {
       });
       closeModal();
       await loadEngagements();
+      // Select the task we just made. Without this the new task exists but the
+      // console still points at the previous one - and "start" then runs the OLD
+      // engagement, which looks exactly like "it did nothing".
+      await selectEngagement(created.id);
       const warns = (created && created.warnings) || [];
       banner(warns.length ? "任务已创建,但授权范围会拦断自己的目标:" + warns.join(";")
         : "任务已创建。点“开始扫描”就能跑只读检查。", warns.length ? "warn" : "ok");

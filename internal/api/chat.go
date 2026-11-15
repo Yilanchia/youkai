@@ -46,7 +46,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, eng ledger.E
 		return
 	}
 	if s.cfg.Planner == nil || !s.cfg.Planner.Enabled() {
-		writeErr(w, http.StatusServiceUnavailable, "AI 还没配置:去「设置」填一个模型 key(不配也能用向导和内置规则)")
+		// Not an error: the conversation should still be useful without a model.
+		// The reply tells the operator what to do next, and the UI offers the
+		// wizard as a one-click alternative.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"reply": "我还没有接上模型,所以只能给你指路:点下面的「用向导直接开工」,填一个网址 + 确认授权," +
+				"内置规则就会自己跑只读检查;想让我规划得更聪明,就在「设置」里填一个模型 key(不填也能用)。",
+			"cards": []map[string]any{{
+				"type": "note",
+				"text": "没有 AI 时,只读检查依然会跑;区别只是计划是内置规则排的,不是模型排的。",
+			}},
+			"no_planner": true,
+		})
 		return
 	}
 

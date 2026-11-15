@@ -56,7 +56,9 @@ func (s *Server) handleLLMConfig(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "%v", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, view)
+		// Same shape as before, plus a `problem` field when the configured model did
+		// not load. The view itself stays flat so existing clients keep working.
+		writeJSON(w, http.StatusOK, llmViewWithProblem{LLMView: view, Problem: s.LLMProblem()})
 	case http.MethodPut:
 		s.putLLMConfig(w, r)
 	default:
@@ -223,7 +225,7 @@ func (s *Server) putLLMConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view, _ := s.llmView(r.Context())
-	writeJSON(w, http.StatusOK, view)
+	writeJSON(w, http.StatusOK, llmViewWithProblem{LLMView: view, Problem: s.LLMProblem()})
 }
 
 // handleLLMTest runs one tiny completion against the given (or current) config.
@@ -420,10 +422,22 @@ func (s *Server) installLLMFromStore(ctx context.Context) error {
 		return nil
 	}
 	st, hasSecret, err := s.storedLLMSettings(ctx)
+	if err != nil {
+		// Remember WHY, so the UI can say "the stored key cannot be decrypted"
+		// instead of quietly running without a planner. This is what turns a silent
+		// "planner: false" in the log into something the operator can act on.
+		s.setLLMProblem("已保存的模型 key 解不开(会话密钥换过?):" + err.Error() +
+			"。请在「设置」里重新填一次 key,或改用环境变量引用。")
+	}
 	if err == nil && (hasSecret || st.BaseURL != "" || st.Model != "") {
 		st = st.Normalise()
 		key, source, kerr := s.resolveLLMKey(ctx, st)
 		if kerr != nil {
+			// The row is there but the secret cannot be opened (the session key
+			// changed) - the single most confusing state for an operator, so it gets
+			// a sentence they can act on instead of a silent "planner: false".
+			s.setLLMProblem("已保存的模型 key 解不开(会话密钥换过?):" + kerr.Error() +
+				"。请在「设置」里重新填一次 key,或改用环境变量引用。")
 			return kerr
 		}
 		if st.Enabled {
@@ -436,9 +450,40 @@ func (s *Server) installLLMFromStore(ctx context.Context) error {
 			s.cfg.Planner.Disable()
 			return nil
 		}
-		return s.cfg.Planner.Install(cfg, planner.SourceSettings, source)
+		if err := s.cfg.Planner.Install(cfg, planner.SourceSettings, source); err != nil {
+			s.setLLMProblem("模型配置没有装上去:" + err.Error())
+			return err
+		}
+		s.setLLMProblem("")
+		return nil
 	}
-	// No stored settings: fall back to the environment, then disabled.
+	// No stored settings: fall back to the environment, then disabled. Do NOT clear
+	// the problem here: if the stored secret failed to decrypt, that reason is the
+	// only thing that explains why the planner is off, and the fallback would wipe it.
 	s.cfg.Planner.SeedFromEnv()
 	return nil
+}
+
+// llmMu guards llmProblem, which is a human-readable reason the configured model
+// did not load (a key that no longer decrypts, a rejected config, ...).
+func (s *Server) setLLMProblem(msg string) {
+	s.llmMu.Lock()
+	s.llmProblem = msg
+	s.llmMu.Unlock()
+}
+
+// LLMProblem returns the last load failure, if any.
+func (s *Server) LLMProblem() string {
+	s.llmMu.Lock()
+	defer s.llmMu.Unlock()
+	return s.llmProblem
+}
+
+// llmViewWithProblem is the wire shape of GET /api/config/llm.
+//
+// The view stays flat (the fields the UI already reads) and `problem` explains a
+// configuration that exists but could not be loaded.
+type llmViewWithProblem struct {
+	LLMView
+	Problem string `json:"problem,omitempty"`
 }

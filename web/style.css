@@ -231,3 +231,13 @@ pre.small { font-size: 11px; background: var(--bg); border: 1px solid var(--line
   font-size: 11px; padding: .05rem .4rem; border-radius: 999px;
   border: 1px solid var(--line); color: var(--muted); margin-left: .25rem;
 }
+
+/* ---- v0.20: composer with the no-AI escape hatch ---- */
+.chat-input { flex-wrap: wrap; }
+.chat-input .ghost.tiny-btn { flex: 0 0 auto; }
+
+/* ---- v0.20: configuration problem banner ---- */
+.problem {
+  margin: .4rem 0 .2rem; padding: .5rem .7rem; border-radius: 8px;
+  border: 1px solid #6a2f35; background: #2a1416; color: #e8b4b8; line-height: 1.5;
+}

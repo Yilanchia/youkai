@@ -62,7 +62,24 @@ function renderChat(host) {
         await api(`/api/engagements/${state.current.id}/intents/${it.id}/execute`, {
           method: "POST", body: JSON.stringify({ operator: "operator" }),
         });
-        banner(`已执行 ${it.capability}。`, "ok");
+        // Approving is not the end of the chain: whatever was waiting on this step
+        // should start now. Resume the run so the operator does not have to go and
+        // press "start" in another panel.
+        let resumed = false;
+        try {
+          const intents = await api(`/api/engagements/${state.current.id}/intents`);
+          const waiting = (intents || []).some((row) => {
+            const x = row.intent || row;
+            return x.status === "todo" && (x.deps || []).includes(it.id);
+          });
+          if (waiting) {
+            await api(`/api/engagements/${state.current.id}/runs`, {
+              method: "POST", body: JSON.stringify({ max_steps: 12 }),
+            });
+            resumed = true;
+          }
+        } catch { /* resuming is best effort; the operator can still press start */ }
+        banner(`已执行 ${it.capability}${resumed ? ",后续步骤继续跑了" : ""}。`, "ok");
       } catch (e) { banner("执行失败:" + e.message); ok.disabled = false; return; }
       await refresh();
     });
@@ -139,15 +156,23 @@ function renderChat(host) {
   const status = el("span", { class: "llm-light" });
   llmStatus().then((r) => { status.dataset.state = r.state; status.textContent = r.text; });
 
+  const problem = (state.config && state.config.problem) || "";
   host.appendChild(el("div", { class: "card" },
     el("div", { class: "actions", style: "justify-content:space-between" },
       el("h3", {}, "对话"),
       status),
+    problem ? el("div", { class: "problem" }, "配置有问题:" + problem) : document.createComment("ok"),
     el("p", { class: "hint" },
       "你说想干什么,AI 把它翻译成一张待确认的卡片;需要冒险的动作会停下来等你点「批准」。" +
       "AI 只有嘴:它改不了授权范围、批准不了动作、也盖不了「已确认」。"),
     log,
-    el("div", { class: "chat-input" }, input, send)));
+    el("div", { class: "chat-input" }, input, send,
+      el("button", {
+        class: "ghost tiny-btn",
+        onclick: () => openTaskWizard("new"),
+        title: "不配 AI 也能用:走向导填一个网址,内置规则会自己跑只读检查",
+      }, "用向导直接开工")),
+    el("p", { class: "hint" }, "不想配 AI?点「用向导直接开工」:填一个网址 + 确认授权,内置规则会自己跑只读检查。")));
 
   // First visit for this engagement: pull the stored conversation.
   const key = state.current ? String(state.current.id) : "none";
@@ -191,10 +216,11 @@ function renderChatCard(card) {
     box.appendChild(el("p", {}, "目标:" + ((sc.include || []).join(", ") || "—")));
     box.appendChild(el("p", { class: "hint" },
       "方法:" + ((sc.methods || ["GET", "HEAD", "OPTIONS"]).join("/")) + " · 高风险开关:默认全关"));
-    const go = el("button", { class: "primary tiny-btn" }, "按这个范围建任务");
+    const go = el("button", { class: "primary tiny-btn" }, "确认开工");
     go.addEventListener("click", async () => {
+      go.disabled = true;
       try {
-        await api("/api/engagements", {
+        const created = await api("/api/engagements", {
           method: "POST",
           body: JSON.stringify({
             name: card.name || "chat-" + new Date().toISOString().slice(5, 16),
@@ -204,12 +230,20 @@ function renderChatCard(card) {
             }, sc),
           }),
         });
-        banner("任务已创建。", "ok");
+        // The click is the human act: it creates the task AND starts the read-only
+        // run, so "confirmed" actually means "it is working now".
         await loadEngagements();
-        setView("runs");
-      } catch (e) { banner("创建失败:" + e.message); }
+        await selectEngagement(created.id);
+        await api(`/api/engagements/${created.id}/runs`, {
+          method: "POST",
+          body: JSON.stringify({ max_steps: 12 }),
+        });
+        banner("开工了:只读检查会自己跑,遇到要冒险的动作会停下来问你。", "ok");
+        await refresh();
+      } catch (e) { banner("开工失败:" + e.message); go.disabled = false; }
     });
-    box.appendChild(el("div", { class: "actions" }, go));
+    box.appendChild(el("div", { class: "actions" }, go,
+      el("span", { class: "hint" }, "确认后立刻开始只读扫描。")));
     return box;
   }
 
@@ -255,6 +289,11 @@ function renderChatCard(card) {
 // llmStatus is the one source of truth for the status light.
 async function llmStatus() {
   const llm = (state.config && state.config.llm) || {};
+  // A key that no longer decrypts is not "not configured": say what happened and
+  // what to do, instead of quietly running without a planner.
+  if (state.config && state.config.problem) {
+    return { state: "bad", text: "● 模型配置没生效:" + state.config.problem };
+  }
   if (!llm.key_present && !llm.key_from_env) {
     return { state: "off", text: "● AI 未配置(不影响使用)" };
   }
