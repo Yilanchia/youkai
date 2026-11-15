@@ -583,6 +583,33 @@ func (s *Store) ApproveIntent(ctx context.Context, engagementID, intentID int64,
 	if len([]rune(strings.TrimSpace(basis))) < 8 {
 		return Approval{}, fmt.Errorf("approval: basis must say why this is authorised (>=8 chars)")
 	}
+	// Two approvals for the same intent can collide inside the guard trigger, and
+	// PostgreSQL resolves that with a deadlock rather than waiting. A deadlock is
+	// transient by definition (the transaction was rolled back), so retry it a
+	// couple of times before surfacing an error to the operator.
+	for attempt := 0; ; attempt++ {
+		ap, err := s.approveIntentOnce(ctx, engagementID, intentID, operator, basis, highAuthPath, highAuthNonce)
+		if err == nil {
+			return ap, nil
+		}
+		if attempt < 2 && isDeadlock(err) {
+			time.Sleep(time.Duration(20*(attempt+1)) * time.Millisecond)
+			continue
+		}
+		return ap, err
+	}
+}
+
+// isDeadlock reports PostgreSQL's 40P01, the only error worth retrying here.
+func isDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "40P01"
+	}
+	return false
+}
+
+func (s *Store) approveIntentOnce(ctx context.Context, engagementID, intentID int64, operator, basis, highAuthPath, highAuthNonce string) (Approval, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Approval{}, err
