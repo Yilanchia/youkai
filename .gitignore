@@ -24,3 +24,8 @@
 # editor/backup artifacts
 *.exe~
 *~
+
+# operator-signed mandates / drafts (per-engagement, not repo content)
+/mandate.json
+*.mandate.json
+/mandate*.json
