@@ -1,0 +1,66 @@
+{
+  "schema": "YoukaiBench/v1",
+  "lab": "scripts/lab-target.py",
+  "target": "http://127.0.0.1:18097",
+  "max_steps": 14,
+  "ran_at": "2026-11-15T08:39:09Z",
+  "recall": 1,
+  "precision": 1,
+  "ground_truth": [
+    {
+      "key": "git-exposure",
+      "expected": "仓库配置可读 (/.git/config 返回 200 且含 [core])",
+      "found": true,
+      "finding": "#115 Git 配置可读"
+    },
+    {
+      "key": "reflection",
+      "expected": "参数 q 反射进响应",
+      "found": true,
+      "finding": "#114 参数 q 的值反射进响应"
+    },
+    {
+      "key": "header-csp",
+      "expected": "缺失 CSP",
+      "found": true,
+      "finding": "#109 缺失安全响应头:CSP"
+    },
+    {
+      "key": "header-xfo",
+      "expected": "缺失 X-Frame-Options",
+      "found": true,
+      "finding": "#110 缺失安全响应头:X-Frame-Options"
+    },
+    {
+      "key": "header-xcto",
+      "expected": "缺失 X-Content-Type-Options",
+      "found": true,
+      "finding": "#111 缺失安全响应头:X-Content-Type-Options"
+    },
+    {
+      "key": "header-referrer",
+      "expected": "缺失 Referrer-Policy",
+      "found": true,
+      "finding": "#112 缺失安全响应头:Referrer-Policy"
+    },
+    {
+      "key": "version",
+      "expected": "服务端版本号暴露",
+      "found": true,
+      "finding": "#113 服务端版本号暴露"
+    },
+    {
+      "key": "api-doc",
+      "expected": "API 文档可公开读取",
+      "found": true,
+      "finding": "#116 API 文档可公开读取"
+    }
+  ],
+  "findings": 13,
+  "requests_allowed": 19,
+  "requests_blocked": 0,
+  "requests_per_finding": 2.38,
+  "egress_zero": true,
+  "stop_reason": "needs_approval — 1 intent(s) need a human: param",
+  "note": "本机靶场、匿名只读链(档 1)的测量；档 2 需要人批,不在基准内;数字不外推。"
+}

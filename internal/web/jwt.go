@@ -223,7 +223,74 @@ func auditJWT(token string) (jwtMeta, []jwtFinding) {
 			Counter: "规范允许 jku/x5u;需确认服务端是否白名单校验该地址(本检查不拉取、不利用)。",
 		})
 	}
+	// ---- v0.15: depth on the same read-only footing ----------------------
+
+	// A kid that reaches a filesystem path or a query is the classic injection
+	// surface. Recorded as shape only; no payload is constructed.
+	if raw, ok := head["kid"].(string); ok && raw != "" {
+		lower := strings.ToLower(raw)
+		if strings.ContainsAny(lower, "/\\") || strings.Contains(lower, "..") ||
+			strings.Contains(lower, "'") || strings.Contains(lower, "union") ||
+			strings.Contains(lower, "select") {
+			out = append(out, jwtFinding{
+				Title: "JWT 的 kid 含路径/查询字符", Severity: "medium",
+				Detail: "kid 里出现了路径分隔符或 SQL 片段。若服务端把 kid 拼进文件路径或密钥查询," +
+					"就可能被用来指定任意密钥或触发注入。只记录形状,不构造载荷。",
+				Counter: "多数库会把 kid 当不透明键查表;需人工确认它的使用方式。",
+			})
+		}
+	}
+
+	// Timestamp coherence: nbf > exp, iat in the future, exp <= iat.
+	if msg := jwtTimeInconsistency(claims); msg != "" {
+		out = append(out, jwtFinding{
+			Title: "JWT 时间字段不自洽", Severity: "low",
+			Detail:  msg + "。这类令牌说明签发/校验逻辑不严谨,但不等同于可绕过。",
+			Counter: "时钟漂移或跨服务时间基准不同也会造成同样现象;需人工核对。",
+		})
+	}
+
+	// Asymmetric algorithm: the risk is on the server side (public key reused as an
+	// HMAC secret). It is a configuration note; proving it would require forging a
+	// token, which this project does not do.
+	if strings.EqualFold(meta.Alg, "rs256") || strings.EqualFold(meta.Alg, "rs384") ||
+		strings.EqualFold(meta.Alg, "rs512") {
+		out = append(out, jwtFinding{
+			Title: "JWT 使用非对称算法(" + strings.ToUpper(meta.Alg) + ")", Severity: "info",
+			Detail: "非对称算法本身是更好的选择。风险在服务端:若它按 alg 头选择验证方式," +
+				"公钥可能被当作 HMAC 密钥。本检查只标注这一配置风险,不伪造令牌验证。",
+			Counter: "要证实需要构造同密钥签名的令牌 —— 那属于伪造,交人工在授权下判断。",
+		})
+	}
+
+	// HMAC strength cannot be judged from the token; say so instead of guessing.
+	if strings.HasPrefix(strings.ToLower(meta.Alg), "hs") {
+		out = append(out, jwtFinding{
+			Title: "JWT 对称密钥强度无法从令牌判断", Severity: "info",
+			Detail: "对称签名的强度取决于服务端密钥,令牌里看不出来。疑似弱配置只能人工验证:" +
+				"youkai 不跑字典、不爆破。",
+			Counter: "本项是提示而非结论;不做任何密钥猜测。",
+		})
+	}
+
 	return meta, out
+}
+
+// jwtTimeInconsistency reports contradictions between exp/nbf/iat.
+func jwtTimeInconsistency(claims map[string]any) string {
+	exp, hasExp := claims["exp"].(float64)
+	nbf, hasNbf := claims["nbf"].(float64)
+	iat, hasIat := claims["iat"].(float64)
+	now := float64(time.Now().Unix())
+	switch {
+	case hasExp && hasIat && exp < iat:
+		return "exp 早于 iat(令牌签发即过期)"
+	case hasNbf && hasExp && nbf > exp:
+		return "nbf 晚于 exp(令牌永远无法生效)"
+	case hasIat && iat > now+300:
+		return fmt.Sprintf("iat 在未来(%.0f 秒后)", iat-now)
+	}
+	return ""
 }
 
 func expStateOf(claims map[string]any, meta *jwtMeta) string {

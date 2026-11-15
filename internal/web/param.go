@@ -185,6 +185,18 @@ func runParamProbe(ctx context.Context, env *Env, args map[string]any, adaptive 
 		if classes["upload"] && !p.hits["upload"] {
 			p.probeUpload(original)
 		}
+		if p.budget <= 0 {
+			break
+		}
+		if classes["nosql"] && !p.hits["nosql"] {
+			p.probeNoSQL(original)
+		}
+		if p.budget <= 0 {
+			break
+		}
+		if classes["crlf"] && !p.hits["crlf"] {
+			p.probeCRLF(original)
+		}
 	}
 
 	label := "param"
@@ -390,7 +402,7 @@ func normaliseClasses(in []string) (map[string]bool, error) {
 	out := map[string]bool{}
 	for _, c := range in {
 		switch strings.ToLower(strings.TrimSpace(c)) {
-		case "sqli", "ssti", "ssrf", "path", "cmdi", "xxe", "upload":
+		case "sqli", "ssti", "ssrf", "path", "cmdi", "xxe", "upload", "nosql", "crlf":
 			out[strings.ToLower(strings.TrimSpace(c))] = true
 		case "deserialize":
 			// Deliberate refusal: there is no safe existence probe for an unsafe

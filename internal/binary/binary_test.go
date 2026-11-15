@@ -36,6 +36,7 @@ func observationJSON(t *testing.T, obs ledger.Observation) string {
 
 func TestRegistryMatchesGateTable(t *testing.T) {
 	want := []string{
+		"blind_screen",
 		"artifact_identify", "artifact_register", "strings", "checksec", "symbols",
 		"disasm", "decompile", "mobile_unpack", "firmware_extract", "secrets",
 		"dataflow", "sarif", "doctor",

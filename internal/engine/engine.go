@@ -180,6 +180,8 @@ type Engine struct {
 	// priorWork is the trail snapshot for the current derive pass. It is refreshed
 	// at the start of every pass and never mutated elsewhere.
 	priorWork []ledger.TraceHit
+	// orderNote records the ranking of the last batch, for the trace.
+	orderNote string
 }
 
 // New builds an engine.
@@ -332,6 +334,17 @@ func (e *Engine) choose(g ledger.GraphView, budget int, mc mandateCtx) (work, bl
 		case it.Status == ledger.StatusTodo && tier.AutonomousOK():
 			work = append(work, it)
 		}
+	}
+	// v0.17: rank by evidence, deterministically. The order decides what the budget
+	// is spent on; it never decides what is allowed.
+	scored := e.orderWork(work)
+	ordered := make([]ledger.Intent, 0, len(scored))
+	for _, s := range scored {
+		ordered = append(ordered, s.Intent)
+	}
+	work = ordered
+	if line := explainOrder(scored); line != "" && len(work) > 1 {
+		e.orderNote = line
 	}
 	if budget > 0 && len(work) > budget {
 		work = work[:budget]

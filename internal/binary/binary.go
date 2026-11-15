@@ -57,6 +57,15 @@ var (
 // order is the order the UI and prompts present.
 var registry = []Capability{
 	{
+		Name: "blind_screen",
+		Description: "Measure whether a sample was built to mislead an analyser: poisoned strings, noise volume, " +
+			"anti-debug vocabulary, packer signatures, entropy. Emits a confidence label (clean / suspected-blinded / " +
+			"heavily-blinded) and never executes, unpacks or judges exploitability. | " +
+			"中文:识别样本是否被 AI 逆向对抗处理(投毒/噪声/反调试/加壳),给可信度标签;不执行、不脱壳、不判可利用性。",
+		Tier: gate.TierReadOnly,
+		Run:  blindScreen,
+	},
+	{
 		Name:        "artifact_identify",
 		Description: "Identify an artifact by magic bytes (PE/ELF/Mach-O/APK/ZIP/DEX/WASM/Java/firmware) and record sha256. Read-only, never executes the sample. | 中文:按魔数识别样本格式并记录 sha256,只读不执行。",
 		Tier:        gate.TierReadOnly,
