@@ -74,6 +74,17 @@ func (e *Engine) recordReflection(ctx context.Context, it ledger.Intent, rec Ste
 	if r == nil {
 		return
 	}
+	// Also narrate the thought: "what did this change" is the most useful line in
+	// the stream, and the wording is already the honest one from v0.19.
+	{
+		ev := newStepEvent(0, 0, PhaseReflect)
+		ev.IntentID = it.ID
+		ev.Capability = it.Capability
+		ev.Status = "info"
+		ev.Summary = clipEvent(strings.TrimPrefix(r.Line, "复盘:"))
+		ev.Tags = r.Tags
+		e.emitStep(ev)
+	}
 	_ = e.cfg.Store.AppendTrace(ctx, e.cfg.EngagementID, it.ID, r.Line)
 	// Facts go through the same ingest path as everything else, so they are
 	// queryable and replayable.

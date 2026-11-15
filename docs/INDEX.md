@@ -34,6 +34,7 @@
 | [DEVPLAN-v0.18](DEVPLAN-v0.18-backfill.md) | 已实现(A/B/C) |
 | [DEVPLAN-v0.19](DEVPLAN-v0.19.md) | 已实现(1-4) |
 | [DEVPLAN-v0.20](DEVPLAN-v0.20.md) | 已实现 |
+| [DEVPLAN-v0.21](DEVPLAN-v0.21.md) | 已实现(1-4) |
 
 ## 进度(IMPL-STATUS)
 
@@ -57,6 +58,7 @@
 | [IMPL-STATUS-v0.18](IMPL-STATUS-v0.18.md) | 现行 | 反致盲闭环 + 多步链 + 认证补齐 |
 | [IMPL-STATUS-v0.19](IMPL-STATUS-v0.19.md) | 现行 | 多链型 + 结果复盘 + 推理式提案 |
 | [IMPL-STATUS-v0.20](IMPL-STATUS-v0.20.md) | 现行 | 对话直接开工的闭环修复(三个真因) |
+| [IMPL-STATUS-v0.21](IMPL-STATUS-v0.21.md) | 现行 | 实时步骤流(看得见 agent 每一步) |
 | [ADR-006](ADR-006-approve-not-sign.md) | 生效 | 档 2 默认 UI 点头,签名降级为可选(取代 ADR-005 的委托书) |
 | [ADR-005](ADR-005-conversational-and-mandate.md) | 部分被覆盖 | 对话面板保留;委托书改为 opt-in |
 

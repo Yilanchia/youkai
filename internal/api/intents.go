@@ -374,6 +374,25 @@ func (s *Server) executeIntent(w http.ResponseWriter, r *http.Request, eng ledge
 	}
 	_ = s.cfg.Store.AppendTrace(ctx, eng.ID, iid, trace)
 
+	// A hand-approved step is a step too: narrate it into the same stream, so the
+	// transcript does not have a hole exactly where the human intervened.
+	{
+		ev := engine.StepEvent{
+			Phase: engine.PhaseExec, IntentID: iid, Capability: it.Capability,
+			Tier: it.Tier, Target: engine.TargetForArgs(it.Args), Status: "ok",
+			Facts: res.NewFacts, Findings: len(res.FindingIDs),
+		}
+		if len(obs.RequestIDs) > 0 {
+			ev.RequestID = obs.RequestIDs[0]
+		}
+		if ev.Facts == 0 && ev.Findings == 0 {
+			ev.Status = "miss"
+			ev.Summary = "没有新证据"
+		} else {
+			ev.Summary = fmt.Sprintf("(人工批准后执行)得到 %d 条事实、%d 条候选", ev.Facts, ev.Findings)
+		}
+		s.narrate(eng.ID, ev)
+	}
 	s.hub.publish("approvals", map[string]any{"type": "executed", "intent_id": iid, "engagement": eng.Name})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"intent_id":   iid,

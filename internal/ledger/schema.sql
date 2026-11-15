@@ -340,3 +340,26 @@ CREATE TABLE IF NOT EXISTS hypotheses (
 );
 
 CREATE INDEX IF NOT EXISTS hypotheses_eng_idx ON hypotheses (engagement_id, state, id);
+-- run_steps is the narrated stream of a run: what the agent did, step by step.
+-- Append-only on purpose: the record of what happened must not be editable.
+CREATE TABLE IF NOT EXISTS run_steps (
+    engagement_id BIGINT NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
+    run_id        BIGINT NOT NULL,
+    seq           INTEGER NOT NULL,
+    phase         TEXT NOT NULL,
+    intent_id     BIGINT NOT NULL DEFAULT 0,
+    capability    TEXT NOT NULL DEFAULT '',
+    tier          INTEGER NOT NULL DEFAULT 0,
+    target        TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT '',
+    summary       TEXT NOT NULL DEFAULT '',
+    facts         INTEGER NOT NULL DEFAULT 0,
+    findings      INTEGER NOT NULL DEFAULT 0,
+    request_id    TEXT NOT NULL DEFAULT '',
+    reason        TEXT NOT NULL DEFAULT '',
+    stop          TEXT NOT NULL DEFAULT '',
+    tags          JSONB NOT NULL DEFAULT '[]'::jsonb,
+    at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (engagement_id, seq)
+);
+CREATE INDEX IF NOT EXISTS run_steps_by_run ON run_steps (run_id, seq);

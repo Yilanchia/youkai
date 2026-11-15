@@ -19,6 +19,10 @@ function parkedIntents() {
 
 function renderChat(host) {
   const cs = chatState();
+  if (state.current && !runStreamState().loaded) {
+    runStreamState().loaded = true;
+    loadStream().then(() => { if (state.view === "chat") render(); });
+  }
   const log = el("div", { class: "chat-log" });
 
   // ---- the always-visible state line -----------------------------------
@@ -177,6 +181,7 @@ function renderChat(host) {
     el("div", { class: "actions", style: "justify-content:space-between" },
       el("h3", {}, "对话"),
       status),
+    el("div", { id: "run-stream-slot" }, renderRunStream()),
     problem ? el("div", { class: "problem" }, "配置有问题:" + problem) : document.createComment("ok"),
     el("p", { class: "hint" },
       "你说想干什么,AI 把它翻译成一张待确认的卡片;需要冒险的动作会停下来等你点「批准」。" +

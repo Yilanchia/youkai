@@ -247,6 +247,9 @@ async function selectEngagement(id) {
   const found = state.engagements.find((x) => x.id === id);
   if (!found) return;
   state.current = found;
+  // The transcript belongs to one engagement: drop the cached one so the chat
+  // reloads the steps for the task now selected.
+  state.stream = { steps: [], lastSeq: 0, loading: false, loaded: false };
   $("#engagement").value = String(id);
   await refresh();
   connectSSE();
@@ -283,6 +286,13 @@ function connectSSE() {
         if (state.view === "approvals" || state.view === "graph") render();
       }
       if (data.running_run_id && state.view === "runs") render();
+    } catch { /* ignore malformed frame */ }
+  });
+  // Live step stream (v0.21): the engine narrates every step as it finishes.
+  es.addEventListener("step", (ev) => {
+    try {
+      const one = JSON.parse(ev.data);
+      pushSteps([one]);
     } catch { /* ignore malformed frame */ }
   });
   es.onerror = () => { /* EventSource retries on its own */ };

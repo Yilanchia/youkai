@@ -133,6 +133,11 @@ type Config struct {
 	// risky step", so a mandate is only honoured where a deployment opts back in.
 	RequireHighAuth bool
 	Now             func() time.Time
+	// OnStep receives a sanitised summary of every step as it finishes, so a UI can
+	// narrate the run while it happens. Nil means "nobody is watching": the run then
+	// behaves exactly as before. The hook must not block; it is called from the run
+	// goroutine and a slow listener must not stall the engine.
+	OnStep func(StepEvent)
 }
 
 // StepRecord is one executed intent, as reported to the UI.
@@ -189,6 +194,8 @@ type Engine struct {
 	lastReflections []string
 	// lastGraph is the graph the current round is deciding on (chain scoring).
 	lastGraph ledger.GraphView
+	// stepSeq numbers the events emitted for the UI (monotonic per run).
+	stepSeq int
 }
 
 // New builds an engine.
@@ -223,6 +230,15 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 	finish := func(stop, reason string) (Report, error) {
 		rep.Stop = stop
 		rep.Reason = reason
+		// The stop is a step too: the operator should see "why it ended" in the same
+		// stream as everything else, not have to guess from a silent UI.
+		{
+			ev := newStepEvent(runID, 0, PhaseStop)
+			ev.Stop = stop
+			ev.Reason = clipEvent(cleanReason(reason))
+			ev.Status = "info"
+			e.emitStep(ev)
+		}
 		if runID != 0 {
 			_ = e.cfg.Store.FinishRun(context.WithoutCancel(ctx), runID, stop, reason, steps, rep.Derived)
 		}
@@ -234,11 +250,17 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 			return finish(StopCancelled, err.Error())
 		}
 		if steps >= e.cfg.MaxSteps {
-			return finish(StopMaxSteps, fmt.Sprintf("reached max_steps=%d", e.cfg.MaxSteps))
+			return finish(StopMaxSteps, fmt.Sprintf("到达本轮步数上限(%d)", e.cfg.MaxSteps))
 		}
 
 		derived, err := e.derive(ctx)
 		rep.Derived += derived
+		if derived > 0 {
+			ev := newStepEvent(runID, 0, PhaseDerive)
+			ev.Status = "info"
+			ev.Summary = fmt.Sprintf("从账本推出 %d 个新步骤", derived)
+			e.emitStep(ev)
+		}
 		if err != nil {
 			rep.Stop = StopError
 			rep.Reason = "derive: " + err.Error()
@@ -272,9 +294,19 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 					rep.Reason = err.Error()
 					return rep, err
 				}
+				// One parked event per step, so the UI can show the exact thing that is
+				// waiting and offer the click right there.
+				for _, b := range blocked {
+					ev := newStepEvent(runID, 0, PhaseExec)
+					ev.IntentID, ev.Capability, ev.Tier = b.ID, b.Capability, b.Tier
+					ev.Target = targetOfArgsForEvent(b.Args)
+					ev.Status = "parked"
+					ev.Reason = "等你批准"
+					e.emitStep(ev)
+				}
 				// Name the step AND what it unblocks: "1 intent needs a human" alone
 				// reads like a dead end when a dependent step is waiting behind it.
-				reason := fmt.Sprintf("%d intent(s) need a human: %s", len(blocked), blocked[0].Capability)
+				reason := fmt.Sprintf("有 %d 个动作等你批准:%s", len(blocked), blocked[0].Capability)
 				if waiting := e.waitingOnApproval(g); len(waiting) > 0 {
 					reason = waiting[0]
 				}
@@ -304,7 +336,7 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 				return finish(StopIdle, fail)
 			}
 			if rep.Reason == "" {
-				rep.Reason = "no claimable intent and no derivable next step"
+				rep.Reason = "这一轮没有可做的新步骤了"
 			}
 			return finish(StopIdle, rep.Reason)
 		}
@@ -317,6 +349,7 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 			// It runs even for a miss, and a miss is reported as a miss.
 			for _, it := range work {
 				if it.ID == rec.IntentID {
+					e.emitStep(eventForRecord(runID, it.Args, rec))
 					if r := e.reflectOn(it, rec); r != nil {
 						e.recordReflection(ctx, it, rec)
 						e.lastReflections = append(e.lastReflections, r.Line)

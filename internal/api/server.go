@@ -17,6 +17,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -383,6 +384,21 @@ func (s *Server) handleEngagementScoped(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, g)
 	case len(tail) >= 1 && tail[0] == "events":
 		s.handleEvents(w, r, eng)
+	case len(tail) >= 1 && tail[0] == "run-steps":
+		// The same stream the SSE endpoint sends, readable on demand: a refresh
+		// rebuilds the transcript instead of starting from an empty panel.
+		since := 0
+		if v := r.URL.Query().Get("since"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				since = n
+			}
+		}
+		steps, err := s.cfg.Store.RunStepsSince(r.Context(), id, since, 200)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, steps)
 	case len(tail) >= 1 && tail[0] == "runs":
 		s.handleRuns(w, r, eng, tail[1:])
 	case len(tail) >= 1 && tail[0] == "intents":
@@ -544,17 +560,25 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request, eng ledger.Eng
 		if maxSteps <= 0 {
 			maxSteps = s.cfg.MaxSteps
 		}
+		// Every step the engine finishes is narrated to the operator and stored, so a
+		// run is watchable while it happens and readable afterwards. The hook only
+		// receives the sanitised StepEvent; it never sees a response body.
+		onStep := func(ev engine.StepEvent) {
+			ev.RunID = run.ID
+			s.narrate(eng.ID, ev)
+		}
 		eng2, nerr := engine.New(engine.Config{
 			Store:           s.cfg.Store,
 			EngagementID:    eng.ID,
 			Engagement:      eng.Name,
 			Dispatcher:      s.cfg.Dispatcher,
 			MaxSteps:        maxSteps,
-			SeedURLs:        body.SeedURLs,
+			SeedURLs:        seeds,
 			AllowedTools:    gate.ReadOnlyCapabilities(),
 			Proposer:        s.proposer(),
 			PairSource:      s.cfg.PairSource,
 			RequireHighAuth: s.cfg.RequireHighAuth,
+			OnStep:          onStep,
 		})
 		if nerr != nil {
 			st.mu.Lock()
@@ -628,16 +652,53 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, eng ledger
 	if !send() {
 		return
 	}
-	ticker := time.NewTicker(time.Second)
+
+	// Step stream. The client tells us the last seq it saw; everything after that is
+	// replayed from the database, so a refresh or a dropped connection resumes
+	// exactly where it left off instead of losing the middle of a run.
+	since := 0
+	if v := r.URL.Query().Get("since"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			since = n
+		}
+	}
+	sendSteps := func() bool {
+		steps, err := s.cfg.Store.RunStepsSince(r.Context(), eng.ID, since, 200)
+		if err != nil || len(steps) == 0 {
+			return err == nil
+		}
+		for _, st := range steps {
+			b, merr := json.Marshal(st)
+			if merr != nil {
+				return false
+			}
+			if _, werr := fmt.Fprintf(w, "event: step\ndata: %s\n\n", b); werr != nil {
+				return false
+			}
+			since = st.Seq
+		}
+		flusher.Flush()
+		return true
+	}
+
+	// While a run is in flight the stream is ticked faster: the whole point is that
+	// the operator watches the steps appear, not that they appear a second late.
+	fast, slow := 300*time.Millisecond, time.Second
+	ticker := time.NewTicker(slow)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			if !send() {
+			if !send() || !sendSteps() {
 				return
 			}
+			want := slow
+			if _, busy := s.currentRun(eng.ID); busy {
+				want = fast
+			}
+			ticker.Reset(want)
 		}
 	}
 }
@@ -862,4 +923,35 @@ func passportSurfaces(sc discipline.Scope) []string {
 		out = append(out, inc)
 	}
 	return out
+}
+
+// publishStep fans one narrated step out to the live listeners.
+//
+// The broadcaster drops for a subscriber whose buffer is full: a slow browser must
+// never slow the run down. The persisted copy is the durable one.
+func (s *Server) publishStep(engagementID int64, ev engine.StepEvent) {
+	s.hub.publish(fmt.Sprintf("steps:%d", engagementID), map[string]any{"type": "step", "step": ev})
+	s.hub.publish("runs", map[string]any{"type": "step", "engagement_id": engagementID, "step": ev})
+}
+
+// narrate stores one step and then tells the live listeners about it.
+//
+// Storing first is what keeps the live stream and the transcript identical: the
+// sequence number the browser sees is the one the database assigned, so a refresh
+// resumes exactly where the stream left off.
+func (s *Server) narrate(engagementID int64, ev engine.StepEvent) {
+	step := ledger.RunStep{
+		RunID: ev.RunID, Phase: ev.Phase, IntentID: ev.IntentID,
+		Capability: ev.Capability, Tier: ev.Tier, Target: ev.Target,
+		Status: ev.Status, Summary: ev.Summary, Facts: ev.Facts,
+		Findings: ev.Findings, RequestID: ev.RequestID, Reason: ev.Reason,
+		Stop: ev.Stop, Tags: ev.Tags, At: ev.At,
+	}
+	stored, err := s.cfg.Store.AppendRunSteps(context.Background(), engagementID, []ledger.RunStep{step})
+	if err != nil || len(stored) == 0 {
+		return
+	}
+	out := stored[0]
+	ev.Seq = out.Seq
+	s.publishStep(engagementID, ev)
 }
