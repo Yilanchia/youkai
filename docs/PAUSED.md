@@ -18,9 +18,28 @@ youkai 想在这件事上赢 DSH,先天不占优——它的价值从来不是"�
 - v0.24 已落地:**模型当大脑、平台当闸**(ADR-007)——模型主导规划,每个动作执行前仍由 gate 重新分档,
   模型不能自升档位/自放行,档2停人前,档3碰不到。
 - DSH 式对话界面已重做(v0.25 ui)。
-- 本地有 7 个提交未推送到 GitHub(`git push` 即可同步)。
+- 暂停时本地有 8 个提交待推送到 GitHub;推送后 `origin/main` 即为本文件所在提交。
 
 **它是一个能跑、测试全绿、架构自洽、已发布的东西。暂停时它是资产,不是债务。**
+
+## 暂停那一刻的实测状态(2026-11-16)
+
+```
+gofmt -l .       无输出
+go vet ./...     干净
+go test ./...    14 个包全绿(需要 YOUKAI_TEST_DSN 指向本机 PG,否则 DB 测试会 SKIP)
+```
+
+几个下次接手要记得的环境事实(踩过坑):
+
+- 内嵌 PostgreSQL 在 `.pgsql/data2`,端口 **55433**(55432 那个已经坏过,`scripts/reset-db.ps1` 能重建);
+  开机后要先起集群,`postgres.pid` 残留要先清掉。
+- 测试必须带 `YOUKAI_TEST_DSN=postgres://youkai@127.0.0.1:55433/youkai_test?sslmode=disable`,
+  否则一跑就"秒绿"——那是跳过,不是通过。
+- 控制台用 `scripts/start-youkai.ps1` 起;它自动挑端口、生成 token、清残留 pid。
+- 本地靶场:`python scripts/lab-target.py 18080`。
+- 这台机器的 GitHub 推送依赖本地代理(7890);代理没起时 `git push` 会 reset —— 不是仓库的问题。
+
 
 ## 核心资产不会浪费(和 Nightwatch 同源)
 
