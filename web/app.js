@@ -306,14 +306,18 @@ function render() {
   renderOnboarding();
   const host = $("#view");
   host.replaceChildren();
+  host.classList.remove("chat-stage"); // only the chat view wears this; clear it every time
+  document.body.classList.toggle("chatting", state.view === "chat"); // lets CSS give chat the full stage
   try {
+    // The chat view is the home screen: it works even before a task exists (the
+    // first message creates a draft task). Every other view needs a task first.
+    if (state.view === "chat") return renderChat(host);
     if (!state.current) {
       host.appendChild(el("div", { class: "empty" },
-        "还没有任务。点「新建任务」,只填一个网址就行 —— 授权范围会自动按安全默认填好。"));
+        "还没有任务。直接去「对话」说一句想测什么,或点「新建任务」填一个网址。"));
       return;
     }
     switch (state.view) {
-      case "chat": return renderChat(host);
       case "approvals": return renderApprovals(host);
       case "evidence": return renderEvidence(host);
       case "runs": return renderRuns(host);

@@ -18,6 +18,7 @@ function parkedIntents() {
 }
 
 function renderChat(host) {
+  host.classList.add("chat-stage");
   const cs = chatState();
   if (state.current && !runStreamState().loaded) {
     runStreamState().loaded = true;
@@ -26,86 +27,20 @@ function renderChat(host) {
   const log = el("div", { class: "chat-log timeline" });
 
   // ---- the always-visible state line -----------------------------------
-  const st = (state.graph && state.graph.stats) || {};
   const parked = parkedIntents();
-  const runs = state.runs || [];
-  const lastRun = runs[0];
-  // The engine's own review notes: "what changed after the last step". This is the
-  // closest thing to "what is it thinking" the UI can honestly show.
-  const reflections = ((state.graph && state.graph.facts) || [])
-    .filter((f) => (f.tags || []).includes("reflection"))
-    .map((f) => f.statement);
-  const lastReflection = reflections.length ? reflections[reflections.length - 1] : "";
-  // The header is the harness bar: what it is doing, plus "停下".
-  host.appendChild(el("div", { id: "activity-slot" }, renderActivityBar()));
 
-  // ---- approval cards: the whole point of "stop at risk" -----------------
-  for (const it of parked) {
-    const what = el("div", { class: "approve-card" },
-      el("strong", {}, "需要你点头"),
-      el("p", {}, `要做什么:${it.capability}${it.rationale ? " — " + it.rationale : ""}`),
-      el("p", { class: "hint" }, `对哪个目标:${it.args && (it.args.url || it.args.target || it.args.login_url) || "(见详情)"}`),
-      el("p", { class: "hint" }, `为什么停:${it.gate_reason || "需要人确认的高风险动作"}`),
-      el("p", { class: "hint" }, "批准后只执行这一个动作,执行完这次批准就用掉了。"));
-    const ok = el("button", { class: "primary tiny-btn" }, "批准并执行");
-    const no = el("button", { class: "ghost tiny-btn" }, "拒绝");
-    ok.addEventListener("click", async () => {
-      ok.disabled = true;
-      try {
-        await api(`/api/engagements/${state.current.id}/intents/${it.id}/approve`, {
-          method: "POST", body: JSON.stringify({ operator: "operator", basis: "operator approved in the UI @ " + new Date().toISOString() }),
-        });
-        await api(`/api/engagements/${state.current.id}/intents/${it.id}/execute`, {
-          method: "POST", body: JSON.stringify({ operator: "operator" }),
-        });
-        // Approving is not the end of the chain: whatever was waiting on this step
-        // should start now. Resume the run so the operator does not have to go and
-        // press "start" in another panel.
-        let resumed = false;
-        try {
-          const intents = await api(`/api/engagements/${state.current.id}/intents`);
-          const waiting = (intents || []).some((row) => {
-            const x = row.intent || row;
-            return x.status === "todo" && (x.deps || []).includes(it.id);
-          });
-          if (waiting) {
-            await api(`/api/engagements/${state.current.id}/runs`, {
-              method: "POST", body: JSON.stringify({ max_steps: 12 }),
-            });
-            resumed = true;
-          }
-        } catch { /* resuming is best effort; the operator can still press start */ }
-        banner(`已执行 ${it.capability}${resumed ? ",后续步骤继续跑了" : ""}。`, "ok");
-      } catch (e) { banner("执行失败:" + e.message); ok.disabled = false; return; }
-      await refresh();
-    });
-    no.addEventListener("click", async () => {
-      no.disabled = true;
-      try {
-        await api(`/api/engagements/${state.current.id}/intents/${it.id}/reject`, {
-          method: "POST", body: JSON.stringify({ operator: "operator", reason: "UI 拒绝" }),
-        });
-        banner("已拒绝这一步。", "ok");
-      } catch (e) { banner("拒绝失败:" + e.message); no.disabled = false; return; }
-      await refresh();
-    });
-    what.appendChild(el("div", { class: "actions" }, ok, no));
-    host.appendChild(what);
-  }
+  // ---- composer (defined early so the submit handler can reference it) ---
+  const input = el("textarea", {
+    placeholder: "想测哪个站、现在卡在哪、该不该开某个开关… 直接说(Enter 发送 · Shift+Enter 换行)",
+    rows: "1",
+  });
+  const send = el("button", { class: "primary send-btn", title: "发送" }, "↑");
 
-  // ---- history: ONE timeline (messages + steps merged by time) ----------
   const paintHistory = (messages) => {
     const merged = renderTimeline(messages, runStreamState().steps);
     log.replaceChildren(...merged.childNodes);
     log.scrollTop = log.scrollHeight;
   };
-
-  // ---- composer ---------------------------------------------------------
-  const input = el("textarea", {
-    placeholder: "用大白话说:想测什么、现在卡在哪、该不该开某个开关…(Enter 发送,Shift+Enter 换行)",
-    rows: "3",
-  });
-  const send = el("button", { class: "primary" }, "发送");
 
   const submit = async () => {
     const text = input.value.trim();
@@ -131,6 +66,7 @@ function renderChat(host) {
     cs2.messages.push({ role: "user", content: text, cards: [], created_at: new Date().toISOString() });
     paintHistory(cs2.messages);
     input.value = "";
+    autosize(input);
     const thinking = el("div", { class: "bubble ai muted" }, "…");
     log.appendChild(thinking);
     log.scrollTop = log.scrollHeight;
@@ -155,34 +91,55 @@ function renderChat(host) {
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
   });
+  input.addEventListener("input", () => autosize(input));
 
   const status = el("span", { class: "llm-light" });
   llmStatus().then((r) => { status.dataset.state = r.state; status.textContent = r.text; });
 
-  const problem = (state.config && state.config.problem) || "";
-  host.appendChild(el("div", { class: "card" },
-    el("div", { class: "actions", style: "justify-content:space-between" },
-      el("h3", {}, "对话"),
-      status),
+  // ---- DSH-style single column: header · scroll · composer -------------
+  const col = el("div", { class: "chat-col" });
 
-    problem ? el("div", { class: "problem" }, "配置有问题:" + problem) : document.createComment("ok"),
-    el("p", { class: "hint" },
-      "你说想干什么,AI 把它翻译成一张待确认的卡片;需要冒险的动作会停下来等你点「批准」。" +
-      "AI 只有嘴:它改不了授权范围、批准不了动作、也盖不了「已确认」。"),
-    log,
-    el("div", { class: "chat-input" }, input, send,
+  // thin header: what it's doing + model light + "用向导" escape hatch
+  col.appendChild(el("div", { class: "chat-head" },
+    el("div", { id: "activity-slot", class: "chat-activity" }, renderActivityBar()),
+    el("div", { class: "chat-head-right" },
+      status,
       el("button", {
         class: "ghost tiny-btn",
         onclick: () => openTaskWizard("new"),
-        title: "不配 AI 也能用:走向导填一个网址,内置规则会自己跑只读检查",
-      }, "用向导直接开工")),
-    el("p", { class: "hint" }, "不想配 AI?点「用向导直接开工」:填一个网址 + 确认授权,内置规则会自己跑只读检查。")));
+        title: "不配 AI 也能用:填一个网址,内置规则自己跑只读检查",
+      }, "向导开工"))));
+
+  const problem = (state.config && state.config.problem) || "";
+  if (problem) col.appendChild(el("div", { class: "problem" }, "模型配置有问题:" + problem));
+
+  // scrollback: parked approval cards float at the top of the stream, then history
+  const scroll = el("div", { class: "chat-scroll" });
+  for (const it of parked) scroll.appendChild(approvalCard(it));
+  scroll.appendChild(log);
+  col.appendChild(scroll);
+
+  // empty state: a gentle prompt instead of a blank window
+  if (!cs.messages.length && !parked.length) {
+    log.appendChild(el("div", { class: "chat-empty" },
+      el("div", { class: "chat-empty-title" }, "跟 youkai 说一声,它就开工"),
+      el("div", { class: "chat-empty-hint" },
+        "比如:帮我测 https://example.com,看看有没有越权或敏感文件暴露。"),
+      el("div", { class: "chat-empty-hint muted" },
+        "它自己跑只读侦察、实时在这里汇报;要动手利用那一步,会停下来等你点头。")));
+  }
+
+  // composer pinned at the bottom, Claude/DSH style
+  col.appendChild(el("div", { class: "chat-composer" },
+    el("div", { class: "composer-box" }, input, send)));
+
+  host.appendChild(col);
 
   // First visit for this engagement: pull the stored conversation.
   const key = state.current ? String(state.current.id) : "none";
   if (cs.key !== key) {
     cs.key = key;
-    paintHistory([]);
+    paintHistory(cs.messages || []);
     if (state.current) {
       api(`/api/engagements/${state.current.id}/chat?limit=200`)
         .then((r) => {
@@ -198,6 +155,44 @@ function renderChat(host) {
   } else {
     paintHistory(cs.messages);
   }
+  setTimeout(() => autosize(input), 0);
+}
+
+// autosize grows the composer textarea with its content, up to a cap.
+function autosize(ta) {
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+}
+
+// approvalCard is the "stop at risk" card, extracted so the DSH layout can float
+// it at the top of the stream. Behaviour is unchanged (ADR-006 approve→execute).
+function approvalCard(it) {
+  const what = el("div", { class: "approve-card" },
+    el("strong", {}, "⏸ 需要你点头"),
+    el("p", {}, `要做什么:${it.capability}${it.rationale ? " — " + it.rationale : ""}`),
+    el("p", { class: "hint" }, `对哪个目标:${it.args && (it.args.url || it.args.target || it.args.login_url) || "(见详情)"}`),
+    el("p", { class: "hint" }, `为什么停:${it.gate_reason || "需要人确认的高风险动作"}`),
+    el("p", { class: "hint" }, "批准后只执行这一个动作,执行完这次批准就用掉了。"));
+  const ok = el("button", { class: "primary tiny-btn" }, "批准并执行");
+  const no = el("button", { class: "ghost tiny-btn" }, "拒绝");
+  ok.addEventListener("click", async () => {
+    ok.disabled = true;
+    try {
+      await approveAndRun(it.id);
+    } catch (e) { banner("执行失败:" + e.message); ok.disabled = false; }
+  });
+  no.addEventListener("click", async () => {
+    no.disabled = true;
+    try {
+      await api(`/api/engagements/${state.current.id}/intents/${it.id}/reject`, {
+        method: "POST", body: JSON.stringify({ operator: "operator", reason: "UI 拒绝" }),
+      });
+      banner("已拒绝这一步。", "ok");
+    } catch (e) { banner("拒绝失败:" + e.message); no.disabled = false; return; }
+    await refresh();
+  });
+  what.appendChild(el("div", { class: "actions" }, ok, no));
+  return what;
 }
 
 // renderChatCard draws one proposal. The buttons call ordinary endpoints; the

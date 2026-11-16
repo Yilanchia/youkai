@@ -305,3 +305,140 @@ pre.small { font-size: 11px; background: var(--bg); border: 1px solid var(--line
 .chat-log.timeline .stream-row.miss { border-left-color: rgba(138,143,152,.25); }
 .chat-log.timeline .stream-row.bad { border-left-color: #e0666a; }
 .chat-log.timeline .stream-row.reflect { border-left-color: rgba(111,139,161,.35); }
+
+/* ===================================================================== */
+/* DSH-style chat stage (v0.25): the conversation fills the whole main    */
+/* area - one column, scrollback above, a pinned composer below, tool     */
+/* steps inlined into the stream like a terminal agent.                   */
+/* ===================================================================== */
+
+/* When the chat view is active, the main area becomes a full-height stage
+   with no padding, so the column can own the whole space. */
+body.chatting .main {
+  display: flex; flex-direction: column; padding: 0; overflow: hidden; min-height: 0;
+}
+body.chatting .topbar,
+body.chatting #next-step,
+body.chatting #onboarding { display: none; }
+body.chatting #banner { margin: 0; }
+.view.chat-stage { padding: 0; height: 100%; min-height: 0; display: flex; flex: 1; }
+
+.chat-col {
+  display: flex; flex-direction: column;
+  flex: 1; min-height: 0;
+  width: min(860px, 100%); margin: 0 auto;
+}
+
+/* thin top bar: what it's doing right now + model light */
+.chat-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: .8rem; padding: .5rem .9rem; border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--bg2), transparent);
+}
+.chat-activity { flex: 1; min-width: 0; }
+.chat-head-right { display: flex; align-items: center; gap: .6rem; flex-shrink: 0; }
+
+/* the scrollback owns the vertical space and scrolls on its own */
+.chat-scroll {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 1rem .9rem 1.4rem; scroll-behavior: smooth;
+}
+.chat-log.timeline { display: flex; flex-direction: column; gap: .9rem; }
+
+/* chat bubbles: user right & accented, AI left & plain - Claude/DSH feel */
+.bubble {
+  max-width: 85%; padding: .6rem .85rem; border-radius: 14px;
+  white-space: pre-wrap; word-break: break-word; line-height: 1.6;
+}
+.bubble.me {
+  align-self: flex-end; background: var(--accent); color: #06100a;
+  border-bottom-right-radius: 5px;
+}
+.bubble.ai {
+  align-self: flex-start; background: var(--card2); border: 1px solid var(--line);
+  border-bottom-left-radius: 5px;
+}
+.bubble.ai.muted { color: var(--muted); font-style: italic; }
+
+/* inlined tool steps: a monospace, terminal-like line inside the stream */
+.chat-log.timeline .stream-row {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem;
+  font-family: var(--mono); font-size: 12.5px;
+  padding: .3rem .6rem; border-radius: 8px;
+  background: #0f1317; border: 1px solid var(--line);
+  align-self: stretch; max-width: 100%;
+}
+.chat-log.timeline .stream-row.ok { border-left: 2px solid var(--accent); }
+.chat-log.timeline .stream-row.miss { border-left: 2px solid var(--muted); }
+.chat-log.timeline .stream-row.bad { border-left: 2px solid var(--danger); }
+.chat-log.timeline .stream-row.wait { border-left: 2px solid var(--warn); background: #1a1712; }
+.chat-log.timeline .stream-row.reflect {
+  background: transparent; border: 0; color: var(--muted); font-style: italic;
+  padding-left: 1.4rem;
+}
+.stream-icon { color: var(--muted); }
+.stream-row.ok .stream-icon { color: var(--accent); }
+.stream-row.wait .stream-icon { color: var(--warn); }
+.stream-cap { font-weight: 600; color: var(--fg); }
+.stream-target { color: var(--info); }
+.stream-tier { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 .3rem; }
+.stream-sum { color: var(--muted); }
+.stream-reason { color: var(--warn); }
+.stream-rid { margin-left: auto; color: var(--muted); font-size: 11px; opacity: .7; }
+.stream-actions { display: inline-flex; gap: .4rem; margin-left: auto; }
+
+/* empty state: a calm invitation, not a blank void */
+.chat-empty { text-align: center; color: var(--muted); margin: auto; padding: 2rem; }
+.chat-empty-title { font-size: 1.15rem; color: var(--fg); margin-bottom: .6rem; }
+.chat-empty-hint { margin: .3rem 0; }
+
+/* proposal / approval cards inside the stream */
+.chat-log.timeline .chat-card,
+.chat-scroll > .approve-card {
+  align-self: stretch; max-width: 100%;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: .8rem .95rem; margin: 0 0 .9rem;
+}
+.chat-scroll > .approve-card { border-left: 3px solid var(--warn); }
+.chat-card h3 { margin: 0 0 .4rem; font-size: .95rem; }
+
+/* composer pinned at the bottom, Claude/DSH style: a rounded box that grows */
+.chat-composer {
+  padding: .7rem .9rem 1rem; border-top: 1px solid var(--line);
+  background: linear-gradient(0deg, var(--bg2), transparent);
+}
+.composer-box {
+  display: flex; align-items: flex-end; gap: .5rem;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 14px;
+  padding: .45rem .5rem .45rem .8rem;
+}
+.composer-box:focus-within { border-color: var(--accent); }
+.composer-box textarea {
+  flex: 1; border: 0; background: transparent; padding: .25rem 0;
+  font-family: inherit; font-size: 14px; min-height: 24px; max-height: 160px;
+  resize: none; outline: none;
+}
+.send-btn {
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px;
+  padding: 0; font-size: 16px; line-height: 1; display: grid; place-items: center;
+}
+
+/* the activity line reads like a status pill */
+.chat-activity .activity-bar {
+  display: inline-flex; align-items: center; gap: .45rem;
+  padding: .2rem .7rem; border-radius: 20px;
+  font-size: 12px; border: 1px solid var(--line); color: var(--muted);
+}
+.chat-activity .activity-bar .activity-dot { font-size: 9px; }
+.chat-activity .activity-bar.busy { color: var(--info); border-color: var(--info); }
+.chat-activity .activity-bar.busy .activity-dot { animation: pulse 1.2s ease-in-out infinite; }
+.chat-activity .activity-bar.wait { color: var(--warn); border-color: var(--warn); }
+.chat-activity .activity-bar.done { color: var(--accent); border-color: var(--accent); }
+.chat-activity .activity-bar.idle { color: var(--muted); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+/* narrow screens: let the column use the full width */
+@media (max-width: 720px) {
+  .chat-col { width: 100%; }
+  .bubble { max-width: 92%; }
+}
