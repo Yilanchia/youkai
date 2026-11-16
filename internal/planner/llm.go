@@ -258,6 +258,15 @@ func Describe(cfg Config) Info {
 // facts, which limits both injection surface and blast radius.
 func buildPrompt(req engine.ProposeRequest, allowed []string) string {
 	var b strings.Builder
+	// The role statement. This is the ADR-007 turn: the model is not a fallback that
+	// fills gaps in a rule table, it is the planning brain. What it may NOT do is
+	// spelled out in the same breath, so a model reading this knows the boundary is
+	// the platform's, not its own good behaviour.
+	b.WriteString("你是这次授权渗透测试的规划大脑。基于下面的归一化证据,自己决定接下来最该做什么," +
+		"可以一次给多步,像连续推进一样把线索串起来。\n")
+	b.WriteString("边界(由平台强制,不由你自觉):档 1 只读动作会被直接执行;档 2 动作会被停下等操作员点头;" +
+		"档 3 不存在。你只需要把「想做且值得做」的动作提出来,rationale 写清你是根据哪条证据做的判断。\n")
+	b.WriteString("不要编造没有证据支持的结论;没有把握就说要继续收集什么证据。\n\n")
 	b.WriteString("授权作业:")
 	b.WriteString(orDash(req.Engagement))
 	b.WriteString("\n\n当前探索图(已归一化,不含响应正文):\n")
@@ -271,15 +280,55 @@ func buildPrompt(req engine.ProposeRequest, allowed []string) string {
 
 	writePriorWork(&b, req.PriorWork)
 
-	b.WriteString("\n可用只读能力白名单(只能用这些 capability):\n")
-	sortStrings(allowed)
-	for _, a := range allowed {
-		b.WriteString("- ")
-		b.WriteString(a)
-		b.WriteString("\n")
+	writeHypotheses(&b, req.Hypotheses)
+	writePairs(&b, req.Pairs)
+
+	b.WriteString("\n可用能力(名字 + 档位;档 2 会被停下等人批):\n")
+	if len(req.Tools) > 0 {
+		for _, t := range req.Tools {
+			fmt.Fprintf(&b, "- %s (tier %d)\n", t.Name, t.Tier)
+		}
+	} else {
+		sortStrings(allowed)
+		for _, a := range allowed {
+			b.WriteString("- ")
+			b.WriteString(a)
+			b.WriteString("\n")
+		}
 	}
-	b.WriteString("\n请只输出一个 JSON 对象,最多 3 条 intent,每条都是最小的一步只读取证。\n")
+	b.WriteString("\n请只输出一个 JSON 对象,最多 3 条 intent,每条都是最小的一步。\n")
 	return b.String()
+}
+
+// writeHypotheses shows the code-only leads. They are hypotheses, and the prompt
+// says so, so the model does not treat them as confirmed findings.
+func writeHypotheses(b *strings.Builder, hs []ledger.Hypothesis) {
+	if len(hs) == 0 {
+		return
+	}
+	b.WriteString("\n白盒线索(未证实,只是代码侧判断):\n")
+	for i, h := range hs {
+		if i >= 20 {
+			break
+		}
+		fmt.Fprintf(b, "- %s %s → sink=%s 参数=%s (%s)\n",
+			orDash(h.Entry), orDash(h.Param), orDash(h.Sink), orDash(h.Param), orDash(h.Path))
+	}
+}
+
+// writePairs shows the declared identities and what each owns.
+func writePairs(b *strings.Builder, pairs []engine.AccessPair) {
+	if len(pairs) == 0 {
+		return
+	}
+	b.WriteString("\n已声明的身份与归属:\n")
+	for i, p := range pairs {
+		if i >= 10 {
+			break
+		}
+		fmt.Fprintf(b, "- 所有者=%s 观察者=%s 资源=%s 标记=%s\n",
+			orDash(p.Owner), orDash(p.Viewer), orDash(p.URL), orDash(p.Marker))
+	}
 }
 
 func writeAssets(b *strings.Builder, g *ledger.GraphView) {

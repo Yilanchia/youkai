@@ -43,7 +43,8 @@ func main() {
 	artifacts := flag.String("artifacts", envOr(envArtifacts, filepath.Join(".youkai", "artifacts")), "artifact root")
 	accountsPath := flag.String("accounts", envOr("YOUKAI_ACCOUNTS", ".youkai/accounts.json"), "identity manifest (YoukaiAccounts/v1)")
 	sessionDir := flag.String("sessions", envOr("YOUKAI_SESSIONS", ".youkai/sessions"), "encrypted session directory")
-	maxSteps := flag.Int("max-steps", 10, "max steps per UI-triggered run")
+	maxSteps := flag.Int("max-steps", 10, "max steps per UI-triggered round")
+	planRounds := flag.Int("plan-rounds", 24, "how many model planning turns one round may spend (cost ceiling, not a safety one)")
 	tokenFlag := flag.String("token", envOr("YOUKAI_TOKEN", ""), "API token (generated when empty)")
 	tokenFile := flag.String("token-file", envOr("YOUKAI_TOKEN_FILE", ""), "write the API token here (0600)")
 	noPlanner := flag.Bool("no-planner", false, "disable the LLM planner even if configured")
@@ -112,6 +113,7 @@ func main() {
 		Planner:         plannerMgr,
 		PairSource:      pairSource{dispatcher},
 		MaxSteps:        *maxSteps,
+		PlanRounds:      *planRounds,
 		Logger:          log.Default(),
 	})
 	if err != nil {

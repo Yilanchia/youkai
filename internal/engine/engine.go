@@ -90,6 +90,14 @@ type ProposeRequest struct {
 	Graph        ledger.GraphView
 	Allowed      []string
 	RunID        int64
+	// Hypotheses are the whitebox leads (code-only) the model may reason about.
+	Hypotheses []ledger.Hypothesis
+	// Pairs are the declared ownership pairs (identities), so the model can plan
+	// an authorisation check instead of guessing one.
+	Pairs []AccessPair
+	// Tools is the allow-list WITH tiers: the model must know which of its ideas
+	// will stop for a human before proposing them.
+	Tools []ToolInfo
 	// PriorWork is what this chain already did, newest last. It lets the model
 	// spend its budget on unknown ground instead of re-proposing a check that
 	// already ran. It is a projection of our own trace lines: no response bodies,
@@ -112,6 +120,9 @@ const (
 	DefaultMaxSteps    = 10
 	DefaultConcurrency = 3
 	defaultMaxLLMRound = 2
+	// defaultPlanRounds is how many model planning turns one run may spend. A
+	// supervised session is many runs' worth of rounds, so this is per-run.
+	defaultPlanRounds = 24
 )
 
 // Config configures one engine instance.
@@ -133,6 +144,9 @@ type Config struct {
 	// risky step", so a mandate is only honoured where a deployment opts back in.
 	RequireHighAuth bool
 	Now             func() time.Time
+	// PlanRounds bounds how many times one run may ask the model to plan. It is a
+	// cost ceiling; the safety boundary is the gate, not this number.
+	PlanRounds int
 	// NoFinishRun leaves the run row to the caller. A supervised session runs several
 	// rounds against one run: if each round wrote "finished", the UI would read a
 	// stale stop in the middle of the session.
@@ -200,6 +214,12 @@ type Engine struct {
 	lastGraph ledger.GraphView
 	// stepSeq numbers the events emitted for the UI (monotonic per run).
 	stepSeq int
+	// runID is the run currently being executed (for planning provenance).
+	runID int64
+	// lastPlanNote is how the last planning round went, for the trace/stream.
+	lastPlanNote string
+	// llmRounds counts the model planning turns spent by this run.
+	llmRounds int
 }
 
 // New builds an engine.
@@ -229,7 +249,7 @@ func New(cfg Config) (*Engine, error) {
 func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 	rep := Report{RunID: runID, Provider: gate.Provider().Reason()}
 	steps := 0
-	llmRounds := 0
+	// (planning now happens in derive; this variable is kept for the trace counter)
 
 	finish := func(stop, reason string) (Report, error) {
 		rep.Stop = stop
@@ -251,6 +271,7 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 		return rep, nil
 	}
 
+	e.runID = runID
 	for {
 		if err := ctx.Err(); err != nil {
 			return finish(StopCancelled, err.Error())
@@ -264,7 +285,11 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 		if derived > 0 {
 			ev := newStepEvent(runID, 0, PhaseDerive)
 			ev.Status = "info"
-			ev.Summary = fmt.Sprintf("从账本推出 %d 个新步骤", derived)
+			if e.lastPlanNote != "" {
+				ev.Summary = e.lastPlanNote
+			} else {
+				ev.Summary = fmt.Sprintf("从账本推出 %d 个新步骤", derived)
+			}
 			e.emitStep(ev)
 		}
 		if err != nil {
@@ -320,17 +345,8 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 				}
 				return finish(StopNeedsApproval, reason)
 			}
-			if e.cfg.Proposer != nil && llmRounds < defaultMaxLLMRound {
-				llmRounds++
-				n, perr := e.propose(ctx, g, runID)
-				if perr != nil {
-					rep.Reason = "llm proposer: " + perr.Error()
-				}
-				if n > 0 {
-					rep.Derived += n
-					continue
-				}
-			}
+			// Planning already ran first in derive (ADR-007); nothing to do here when
+			// it produced nothing runnable, which is exactly the idle case.
 			// A run that stops with nothing done must say WHY. The common case is a
 			// dependent step waiting on a tier-2 step that a human has not approved
 			// yet - from the operator's chair that used to look like "it did nothing".
@@ -676,14 +692,28 @@ func (e *Engine) fail(ctx context.Context, it ledger.Intent, rec StepRecord, msg
 
 // propose asks the LLM planner for read-only next steps.
 func (e *Engine) propose(ctx context.Context, g ledger.GraphView, runID int64) (int, error) {
-	specs, err := e.cfg.Proposer.Propose(ctx, ProposeRequest{
+	req := ProposeRequest{
 		EngagementID: e.cfg.EngagementID,
 		Engagement:   e.cfg.Engagement,
 		Graph:        g,
 		Allowed:      e.cfg.AllowedTools,
 		RunID:        runID,
 		PriorWork:    e.priorForPrompt(),
-	})
+	}
+	// Everything below is a projection of the ledger: statements, kinds, locations
+	// and request ids. No response bodies, no headers, no credentials - a compromised
+	// model can be induced to "want" anything, but it can only ever see what we hand
+	// it, and the guard still decides what leaves the machine.
+	if hs, herr := e.cfg.Store.ListHypotheses(ctx, e.cfg.EngagementID, ledger.HypothesisOpen); herr == nil {
+		req.Hypotheses = hs
+	}
+	if e.cfg.PairSource != nil {
+		if pairs, perr := e.cfg.PairSource.BolaPairs(ctx); perr == nil {
+			req.Pairs = pairs
+		}
+	}
+	req.Tools = e.toolInfo()
+	specs, err := e.cfg.Proposer.Propose(ctx, req)
 	if err != nil {
 		return 0, err
 	}
@@ -693,6 +723,14 @@ func (e *Engine) propose(ctx context.Context, g ledger.GraphView, runID int64) (
 			continue // unreplayable proposals are inadmissible
 		}
 		spec.Inferred = true
+		// The tier is OURS, not the model's. A proposal that claims tier 1 for a
+		// proof-grade capability is re-classified here, before it can be considered
+		// work - this is the line ADR-007 draws: the model decides what it wants, the
+		// gate decides what that costs.
+		dec := gate.Explain(spec.Capability, spec.Args)
+		spec.Tier = int(dec.Tier)
+		spec.RequiresApproval = dec.Tier.NeedsHuman()
+		spec.GateReason = dec.Reason
 		if _, created, err := e.cfg.Store.EnsureIntent(ctx, e.cfg.EngagementID, spec); err != nil {
 			return added, err
 		} else if created {
@@ -868,6 +906,23 @@ func (e *Engine) waitingOnApproval(g ledger.GraphView) []string {
 				"还在等一个批准:#%d %s(批准后 #%d %s 会自动接着跑)",
 				p.ID, p.Capability, it.ID, it.Capability))
 		}
+	}
+	return out
+}
+
+// ToolInfo is one capability as the model sees it: name, tier, one line of what it
+// does. Never a credential, never a target body.
+type ToolInfo struct {
+	Name  string `json:"name"`
+	Tier  int    `json:"tier"`
+	About string `json:"about,omitempty"`
+}
+
+// toolInfo renders the allow-list with tiers for the prompt.
+func (e *Engine) toolInfo() []ToolInfo {
+	out := make([]ToolInfo, 0, len(e.cfg.AllowedTools))
+	for _, name := range e.cfg.AllowedTools {
+		out = append(out, ToolInfo{Name: name, Tier: int(gate.Classify(name, nil))})
 	}
 	return out
 }

@@ -47,6 +47,26 @@ func (e *Engine) derive(ctx context.Context) (int, error) {
 	}
 	e.priorWork = prior
 
+	// ---- the model is the brain (ADR-007) ---------------------------------
+	//
+	// The model plans FIRST. The rules below are a fallback, not the default: they
+	// only speak when the model is unavailable, has spent its planning budget, or
+	// had nothing executable to propose. Every proposal still goes through
+	// gate.Classify + EnsureIntent, so "the model decides" never means "the model
+	// authorises" - tier-2 work it proposes still parks for a human.
+	if e.modelShouldPlan(g) {
+		n, perr := e.propose(ctx, g, e.runID)
+		if perr == nil && n > 0 {
+			e.llmRounds++
+			e.lastPlanNote = fmt.Sprintf("模型规划:%d 个新步骤", n)
+			return n, nil
+		}
+		if perr != nil {
+			// A broken model must not stall the run: remember why, then fall back.
+			e.lastPlanNote = "模型不可用,改用内置规则:" + perr.Error()
+		}
+	}
+
 	added := 0
 	rules := []func(context.Context, ledger.GraphView) ([]derivation, error){
 		e.ruleBootstrapAssets,
@@ -576,4 +596,50 @@ func (e *Engine) ruleChains(ctx context.Context, g ledger.GraphView) ([]derivati
 		return nil, err
 	}
 	return nil, nil
+}
+
+// modelShouldPlan decides whether this round asks the model to plan.
+//
+// Three reasons to stay quiet: there is no model; the run has spent its planning
+// budget (a cost ceiling, not a correctness one); or there is already claimable
+// work waiting - re-planning while steps are queued would just churn.
+func (e *Engine) modelShouldPlan(g ledger.GraphView) bool {
+	if e.cfg.Proposer == nil {
+		return false
+	}
+	if e.llmRounds >= e.planBudget() {
+		return false
+	}
+	for _, it := range g.Intents {
+		if it.Status != ledger.StatusTodo {
+			continue
+		}
+		// A todo intent with no unmet dependency is work the loop can do right now.
+		ready := true
+		for _, d := range it.Deps {
+			done := false
+			for _, other := range g.Intents {
+				if other.ID == d && other.Status == ledger.StatusDone {
+					done = true
+					break
+				}
+			}
+			if !done {
+				ready = false
+				break
+			}
+		}
+		if ready && !gate.Tier(it.Tier).NeedsHuman() {
+			return false
+		}
+	}
+	return true
+}
+
+// planBudget bounds how many times one run may ask the model to plan.
+func (e *Engine) planBudget() int {
+	if e.cfg.PlanRounds > 0 {
+		return e.cfg.PlanRounds
+	}
+	return defaultPlanRounds
 }

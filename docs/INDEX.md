@@ -37,6 +37,8 @@
 | [DEVPLAN-v0.21](DEVPLAN-v0.21.md) | 已实现(1-4) |
 | [DEVPLAN-v0.22](DEVPLAN-v0.22.md) | 已实现(1-3) |
 | [DEVPLAN-v0.23](DEVPLAN-v0.23.md) | 已实现(1-4) |
+| [ADR-007](ADR-007-model-is-the-brain.md) | 已决定 |
+| [DEVPLAN-v0.24](DEVPLAN-v0.24.md) | 已实现(1-4) |
 
 ## 进度(IMPL-STATUS)
 
@@ -63,6 +65,7 @@
 | [IMPL-STATUS-v0.21](IMPL-STATUS-v0.21.md) | 现行 | 实时步骤流(看得见 agent 每一步) |
 | [IMPL-STATUS-v0.22](IMPL-STATUS-v0.22.md) | 现行 | 托管自动续跑到真停止点 + 一条时间线 |
 | [IMPL-STATUS-v0.23](IMPL-STATUS-v0.23.md) | 现行 | 利用方案文本 + 修复建议 |
+| [IMPL-STATUS-v0.24](IMPL-STATUS-v0.24.md) | 现行 | 模型主导规划,闸门焊在平台 |
 | [ADR-006](ADR-006-approve-not-sign.md) | 生效 | 档 2 默认 UI 点头,签名降级为可选(取代 ADR-005 的委托书) |
 | [ADR-005](ADR-005-conversational-and-mandate.md) | 部分被覆盖 | 对话面板保留;委托书改为 opt-in |
 

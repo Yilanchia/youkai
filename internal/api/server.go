@@ -63,6 +63,8 @@ type Config struct {
 	PairSource engine.PairSource
 	// MaxSteps defaults to 10 for UI-triggered runs.
 	MaxSteps int
+	// PlanRounds bounds the model planning turns per engine round (0 = default).
+	PlanRounds int
 	// SuperviseBudget is the total step budget of one supervised session (all
 	// rounds together). Zero means defaultSuperviseBudget. Crossing it is a TRUE
 	// stop: the operator decides whether to spend another session.
@@ -631,7 +633,10 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request, eng ledger.Eng
 				PairSource:      s.cfg.PairSource,
 				RequireHighAuth: s.cfg.RequireHighAuth,
 				NoFinishRun:     true,
-				OnStep:          onStep,
+				// Planning budget per round: each supervised round is its own engine,
+				// so a session of several rounds still gets several planning turns.
+				PlanRounds: s.cfg.PlanRounds,
+				OnStep:     onStep,
 			})
 			if nerr != nil {
 				st.mu.Lock()
