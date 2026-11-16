@@ -57,6 +57,9 @@ jobs:
             exit 1
           fi
 
+      - name: powershell scripts carry a UTF-8 BOM
+        run: bash scripts/check-ps1-bom.sh
+
       - name: build
         run: go build ./...
 

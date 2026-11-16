@@ -1,4 +1,4 @@
-# start-youkai.ps1 — 一键启动 youkai 控制台。
+﻿# start-youkai.ps1 — 一键启动 youkai 控制台。
 #
 # 为什么需要它:youkaid.exe 是一个控制台服务端,不是 GUI。双击 exe 不会弹窗,
 # 而且它需要 PostgreSQL + YOUKAI_DSN,否则一启动就退出(看着像"打不开")。
