@@ -276,10 +276,11 @@ function renderChatCard(card) {
     }
     box.appendChild(list);
     box.appendChild(el("p", { class: "hint" },
-      "只排只读步骤。其中任何需要你点头的动作,仍然会停下来等你批。"));
-    const go = el("button", { class: "primary tiny-btn" }, "把这些步骤排进队列");
+      "只排只读步骤,排完我直接开跑。其中任何需要你点头的动作,仍然会停下来等你批。"));
+    const go = el("button", { class: "primary tiny-btn" }, "排进去,开跑");
     go.addEventListener("click", async () => {
       if (!state.current) return banner("先建一个任务,再排步骤");
+      go.disabled = true;
       let ok = 0;
       for (const st of card.steps || []) {
         try {
@@ -288,9 +289,19 @@ function renderChatCard(card) {
             body: JSON.stringify({ capability: st.capability, args: st.args || {}, rationale: st.why || "from chat" }),
           });
           ok++;
-        } catch (e) { banner("排入失败:" + e.message); break; }
+        } catch (e) { banner("排入失败:" + e.message); go.disabled = false; break; }
       }
-      if (ok) { banner(`已排入 ${ok} 个步骤。点「开始」继续。`, "ok"); await refresh(); }
+      if (ok) {
+        // Do not make the operator hunt for a separate "start" button: queueing the
+        // steps and starting the supervised run is one intent, so it is one click.
+        try {
+          await api(`/api/engagements/${state.current.id}/runs`, {
+            method: "POST", body: JSON.stringify({ max_steps: 12 }),
+          });
+          banner(`排了 ${ok} 个步骤,已经开跑 —— 步骤会在下面实时出现,遇到要你拍板的会停下。`, "ok");
+        } catch (e) { banner("排好了但没能自动开跑:" + e.message); }
+        await refresh();
+      }
     });
     box.appendChild(el("div", { class: "actions" }, go));
     return box;
