@@ -11,7 +11,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -572,3 +575,27 @@ func canonicalJSON(t *testing.T, m map[string]any) string {
 }
 
 var _ engine.Dispatcher = (*fakeDispatcher)(nil)
+
+// TestChatReplyCarriesATimestamp is a small UI invariant with a big symptom: a
+// message without created_at has no place in the merged timeline, and it used to
+// sort to the TOP - so the assistant's answer rendered above the question.
+func TestChatReplyCarriesATimestamp(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir := filepath.Dir(thisFile)
+	src := readFileOrFail(t, filepath.Join(dir, "..", "..", "web", "chat.js"))
+	// The assistant push happens once; find it and require a timestamp on it.
+	idx := strings.Index(src, `role: "assistant"`)
+	if idx < 0 {
+		t.Fatal("chat.js no longer pushes an assistant message")
+	}
+	// The object literal must carry created_at within its body.
+	tail := src[idx:]
+	end := strings.Index(tail, "});")
+	if end < 0 {
+		end = len(tail)
+	}
+	body := tail[:min(end, 400)]
+	if !strings.Contains(body, "created_at") {
+		t.Fatalf("the assistant message has no created_at, so the reply can sort above the question:\n%s", body)
+	}
+}

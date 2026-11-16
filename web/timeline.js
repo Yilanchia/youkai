@@ -30,6 +30,16 @@ function timelineItems(messages, steps) {
       step: s,
     });
   });
+  // An item with no usable timestamp must NOT jump to the top (it sorts as t=0 and
+  // used to push the assistant's answer above the question). Such items are placed
+  // after everything that does have a time, keeping their insertion order - which is
+  // "just appended", the only honest reading of "I don't know when this happened".
+  const maxT = items.reduce((m, it) => (it.t > m ? it.t : m), 0);
+  if (maxT > 0) {
+    items.forEach((it, idx) => {
+      if (it.t === 0) it.t = maxT + (idx + 1);
+    });
+  }
   items.sort((a, b) => {
     if (a.t !== b.t) return a.t - b.t;
     if (a.rank !== b.rank) return a.rank - b.rank;

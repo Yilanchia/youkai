@@ -75,7 +75,13 @@ function renderChat(host) {
         method: "POST", body: JSON.stringify({ message: text }),
       });
       thinking.remove();
-      cs2.messages.push({ role: "assistant", content: r.reply || "(空)", cards: r.cards || [] });
+      // The reply must carry a timestamp too: without one the merged timeline had no
+    // time for it and sorted it to the top - i.e. the answer appeared ABOVE the
+    // question it was answering.
+    cs2.messages.push({
+      role: "assistant", content: r.reply || "(空)", cards: r.cards || [],
+      created_at: new Date().toISOString(),
+    });
       paintHistory(cs2.messages);
       if ((r.rejected || []).length) {
         log.appendChild(el("p", { class: "hint" },
