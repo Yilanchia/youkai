@@ -102,6 +102,9 @@ func writeFindingMD(sb *strings.Builder, f FindingReport) {
 	fmt.Fprintf(sb, "\n**② 最小影响**:%s\n", dash(f.MinImpact))
 	fmt.Fprintf(sb, "\n**③ 停止点**:%s\n", dash(f.StopCondition))
 	fmt.Fprintf(sb, "\n**④ 反证说明**:%s\n", dash(f.Counter))
+	if r := remediationFor(f); r != "" {
+		fmt.Fprintf(sb, "\n**⑤ 修复建议**:%s\n", r)
+	}
 	if f.Detail != "" {
 		fmt.Fprintf(sb, "\n观察记录:%s\n", f.Detail)
 	}

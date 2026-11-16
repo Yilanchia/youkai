@@ -102,6 +102,9 @@ type FindingReport struct {
 	Disclosable bool `json:"disclosable"`
 	// Capability is the action behind the finding, derived from the audit purpose.
 	Capability string `json:"capability,omitempty"`
+	// Remediation is how to fix it: generic best practice, safe to hand to the owner.
+	// Empty for kinds we have no specific advice for - a blank beats a guess.
+	Remediation string `json:"remediation,omitempty"`
 }
 
 // IntentReport is one intent plus the wording that bounded it.
@@ -173,6 +176,7 @@ func Build(in Input) Bundle {
 // gradeFinding checks the four pieces and fills what can be derived honestly.
 func gradeFinding(f ledger.Finding, audit map[string]ledger.AuditRow) FindingReport {
 	fr := FindingReport{Finding: f}
+	fr.Remediation = RemediationFor(f.Kind)
 	fr.Evidence.RequestIDs = requestIDsOf(f.Evidence)
 	for _, id := range fr.Evidence.RequestIDs {
 		if id == "" {

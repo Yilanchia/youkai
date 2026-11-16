@@ -118,3 +118,31 @@ func hasTag(tags []string, want string) bool {
 	}
 	return false
 }
+
+// TestPwnTemplateUsesBinflowLeads: the skeleton stops being generic once the sample
+// has a lead. It still never runs anything.
+func TestPwnTemplateUsesBinflowLeads(t *testing.T) {
+	dir := t.TempDir()
+	env := &Env{ArtifactDir: dir, EngagementID: 1, Engagement: "lab"}
+	obs, err := Run(nil, env, "pwn_template", map[string]any{
+		"binary": "/tmp/sample", "hypotheses": "argv → system, argv → strcpy",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	path, _ := obs.Facts[0].Evidence["path"].(string)
+	if path == "" {
+		t.Fatalf("no artefact: %+v", obs.Facts[0].Evidence)
+	}
+	body, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatalf("read: %v", rerr)
+	}
+	text := string(body)
+	if !strings.Contains(text, "命令执行面") || !strings.Contains(text, "无界拷贝面") {
+		t.Fatalf("the plan is not tailored to the leads:\n%s", text)
+	}
+	if strings.Contains(text, "youkai 执行了") {
+		t.Fatalf("the plan claims execution:\n%s", text)
+	}
+}

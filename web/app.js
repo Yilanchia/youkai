@@ -561,9 +561,15 @@ async function renderEvidence(host) {
       (f.incomplete || []).length
         ? el("p", { class: "warn" }, "证据不完整:缺 " + f.incomplete.join("、"))
         : null,
-      f.state === "candidate"
-        ? el("div", { class: "actions" }, el("button", { class: "ghost", onclick: () => verdictModal(f) }, "确认 verified…"))
-        : el("p", { class: "hint" }, "已由操作员确认。")));
+      // v0.23: the plan is text, generated on request, and it never fires a
+      // request at the target. Tier 2, so the click queues a step awaiting approval.
+      el("div", { class: "actions" },
+        el("button", { class: "ghost tiny-btn", onclick: () => requestExploitPlan(f) },
+          "生成利用方案(文本)"),
+        f.state === "candidate"
+          ? el("button", { class: "ghost", onclick: () => verdictModal(f) }, "确认 verified…")
+          : el("span", { class: "hint" }, "已由操作员确认。")),
+      f.remediation ? el("p", { class: "hint" }, "修复建议:" + f.remediation) : null));
   }
 
   host.appendChild(el("div", { class: "sec" }, "历史快照"));
@@ -1026,4 +1032,17 @@ function stopText(reason) {
   if (r.indexOf("cancelled") >= 0) return "已被取消";
   if (r.indexOf("所有请求都被") >= 0) return r;
   return r;
+}
+// requestExploitPlan queues the tier-2 "write me the plan" step for one finding.
+// The text is produced only after the operator approves it; youkai never sends a
+// PoC, it writes a document.
+async function requestExploitPlan(f) {
+  banner("");
+  try {
+    const r = await api(`/api/engagements/${state.current.id}/findings/${f.id}/plan`, {
+      method: "POST", body: JSON.stringify({}),
+    });
+    banner(`已排入 #${r.intent_id}:${r.gate_reason}。去「待办审批」批准后它会写出方案文本(不会向目标发请求)。`, "ok");
+    await refresh();
+  } catch (e) { banner("排入失败:" + e.message); }
 }

@@ -86,6 +86,12 @@ io = start()
 # 3) io.sendline(payload)
 # io.interactive()
 `, binaryName, arch, remote)
+	// If the caller passes leads from binflow (v0.18), the skeleton stops being
+	// generic: it names the exact input→sink path that was found and what to check
+	// first. Still a skeleton - youkai never runs it.
+	if lead := strings.TrimSpace(argString(args, "hypotheses")); lead != "" {
+		text += tailoredLeadSection(lead)
+	}
 	path, fact, err := writeGeneratedText(env, "pwn_template", text)
 	if err != nil {
 		return ledger.Observation{}, err
@@ -207,4 +213,36 @@ func downloadCapability(ctx context.Context, env *Env, args map[string]any) (led
 	return ledger.Observation{}, fmt.Errorf(
 		"%w: downloading goes through discipline.Guard and requires a human confirm; this package has no network capability",
 		ErrNotImplemented)
+}
+
+// tailoredLeadSection turns binflow-style leads into concrete next steps.
+//
+// "argv → system" is a different investigation from "argv → strcpy": the first is
+// about what the argument string may contain, the second is about length. Naming
+// that difference is the whole value of having binflow in the first place.
+func tailoredLeadSection(leads string) string {
+	var b strings.Builder
+	b.WriteString("\n# ---- 针对本样本的线索(binflow,code-only)----\n")
+	for _, raw := range strings.Split(leads, ",") {
+		lead := strings.ToLower(strings.TrimSpace(raw))
+		if lead == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "# 线索:%s\n", lead)
+		switch {
+		case strings.Contains(lead, "system"), strings.Contains(lead, "exec"), strings.Contains(lead, "popen"):
+			b.WriteString("#   命令执行面:看 argv/环境变量是否原样进入命令串。先用 \";true\" 之类无害串试\n" +
+				"#   是否能改变执行路径(在授权靶机上),再判断需不需要引号/空白绕过。\n")
+		case strings.Contains(lead, "strcpy"), strings.Contains(lead, "strcat"), strings.Contains(lead, "sprintf"):
+			b.WriteString("#   无界拷贝面:先用 pwn_cyclic 找偏移(在 gdb 里真跑,不要静态猜),\n" +
+				"#   再确认覆盖到的是返回地址还是函数指针。\n")
+		case strings.Contains(lead, "memcpy"), strings.Contains(lead, "read"):
+			b.WriteString("#   长度可控拷贝面:确认长度字段是否来自输入,以及目标缓冲区大小。\n")
+		case strings.Contains(lead, "printf"), strings.Contains(lead, "syslog"):
+			b.WriteString("#   格式化串面:先用 \"%p.%p.%p\" 观察栈内容(无副作用),不要直接写内存。\n")
+		}
+	}
+	b.WriteString("# 修复方向:对进入上述 sink 的输入做长度/字符白名单校验;\n" +
+		"# 编译期加固:开启 FORTIFY_SOURCE、栈保护、RELRO/ PIE(按平台能力)。\n")
+	return b.String()
 }

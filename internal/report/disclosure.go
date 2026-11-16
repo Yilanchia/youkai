@@ -184,26 +184,13 @@ func reproSteps(f FindingReport) []string {
 }
 
 func remediationFor(f FindingReport) string {
-	switch strings.ToLower(strings.TrimSpace(f.Kind)) {
-	case "bola":
-		return "在服务端对每次对象访问做归属校验(不只依赖前端或可猜测的 id);同一资源在不同身份下应有一致的授权判定。"
-	case "sqli":
-		return "使用参数化查询;为受影响参数增加服务端校验,并避免把数据库错误信息回显给客户端。"
-	case "ssti":
-		return "不要把用户输入拼接进模板;使用沙箱化的模板渲染并对变量做转义。"
-	case "xss", "reflection":
-		return "对输出做上下文相关转义,并启用严格的 CSP;避免把输入直接写入 script 或事件属性。"
-	case "redirect":
-		return "对跳转目标做白名单校验,禁止跳到外部站点。"
-	case "cors":
-		return "不要把任意 Origin 反射进 ACAO;需要凭证的接口应固定可信来源。"
-	case "exposure", "git":
-		return "把版本库与备份文件移出 Web 根目录,并在网关层拦截常见探测路径。"
-	case "headers":
-		return "补齐安全响应头(如 CSP、X-Content-Type-Options、Referrer-Policy),并复核是否影响业务。"
-	default:
-		return "按该类型的一般修复原则处理;复核同一判定逻辑是否在其他接口重复。"
+	if f.Remediation != "" {
+		return f.Remediation
 	}
+	if r := RemediationFor(f.Kind); r != "" {
+		return r
+	}
+	return "按该类型的一般修复原则处理;复核同一判定逻辑是否在其他接口重复。"
 }
 
 func writeAuthStatementMD(sb *strings.Builder, scope ScopeSummary) {

@@ -85,6 +85,9 @@ footer{margin-top:32px;color:#888;font-size:12px;border-top:1px solid #eee;paddi
 		fmt.Fprintf(&sb, "<li><strong>② 最小影响</strong>:%s</li>", esc(dash(f.MinImpact)))
 		fmt.Fprintf(&sb, "<li><strong>③ 停止点</strong>:%s</li>", esc(dash(f.StopCondition)))
 		fmt.Fprintf(&sb, "<li><strong>④ 反证说明</strong>:%s</li>", esc(dash(f.Counter)))
+		if r := remediationFor(f); r != "" {
+			fmt.Fprintf(&sb, "<li><strong>⑤ 修复建议</strong>:%s</li>", esc(r))
+		}
 		sb.WriteString("</ul>")
 		if f.Detail != "" {
 			fmt.Fprintf(&sb, "<p>%s</p>", esc(f.Detail))

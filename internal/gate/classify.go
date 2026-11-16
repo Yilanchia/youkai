@@ -152,6 +152,10 @@ var table = map[string]Tier{
 	"web_poc":       TierProof,
 	"impact_proof":  TierProof,
 	"frida_script":  TierProof,
+	// web_exploit_plan writes a document, not a request. It is proof-grade because
+	// generating the "how to attack" text is a human decision, even though the
+	// output never leaves the operator's desk.
+	"web_exploit_plan": TierProof,
 	// Fetching attacker-controlled bytes onto disk is a human decision.
 	"download": TierProof,
 }

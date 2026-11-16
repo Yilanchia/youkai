@@ -29,6 +29,7 @@ import (
 	"youkai/internal/gate"
 	"youkai/internal/ledger"
 	"youkai/internal/planner"
+	"youkai/internal/report"
 )
 
 // Config configures the server.
@@ -389,6 +390,8 @@ func (s *Server) handleEngagementScoped(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, g)
 	case len(tail) >= 1 && tail[0] == "events":
 		s.handleEvents(w, r, eng)
+	case len(tail) >= 3 && tail[0] == "findings" && tail[2] == "plan" && r.Method == http.MethodPost:
+		s.createExploitPlan(w, r, eng, tail[1])
 	case len(tail) >= 1 && tail[0] == "run-steps":
 		// The same stream the SSE endpoint sends, readable on demand: a refresh
 		// rebuilds the transcript instead of starting from an empty panel.
@@ -1099,8 +1102,10 @@ func (s *Server) summariseStop(ctx context.Context, eng ledger.Engagement, statu
 	case engine.StopSensitive:
 		text = "我停在这里:遇到了疑似敏感数据。这类东西我不会继续读,也不会写进报告正文 —— 请你人工确认。"
 	case engine.StopIdle:
-		text = fmt.Sprintf("这一程只读检查跑完了:%d 次请求、%d 条候选发现(已确认 0 —— candidate 不等于 verified)。"+
-			"接下来可以:看结果、让我继续深挖某条线索,或者换一个目标。", st.AuditAllowed, st.Findings)
+		text = fmt.Sprintf("这一程只读检查跑完了:%d 次请求、%d 条候选发现(已确认 0 —— candidate 不等于 verified)。",
+			st.AuditAllowed, st.Findings)
+		text += s.topFindingHint(ctx, eng.ID)
+		text += "接下来可以:看结果、让我继续深挖某条线索,或者换一个目标。"
 	default:
 		if reason != "" {
 			text = "这一程结束了:" + reason
@@ -1113,4 +1118,121 @@ func (s *Server) summariseStop(ctx context.Context, eng ledger.Engagement, statu
 		return
 	}
 	s.hub.publish("chat", map[string]any{"type": "chat_summary", "engagement_id": eng.ID, "text": text})
+}
+
+// createExploitPlan queues a tier-2 "write me the plan" step for one finding.
+//
+// The output is text; the click to generate it is still a human decision, because
+// "how would I exploit this" is the moment a report turns into a weapon. Nothing
+// runs against the target: the capability has no guard call at all.
+func (s *Server) createExploitPlan(w http.ResponseWriter, r *http.Request, eng ledger.Engagement, rawID string) {
+	fid, err := parseID(rawID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad finding id")
+		return
+	}
+	f, err := s.cfg.Store.Finding(r.Context(), eng.ID, fid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "finding %d: %v", fid, err)
+		return
+	}
+	// Only a confirmed or well-evidenced candidate gets a plan. A pure hypothesis
+	// (no request behind it) would force us to invent an exploit.
+	if f.State != ledger.FindingVerified && f.State != ledger.FindingCandidate {
+		writeErr(w, http.StatusConflict, "这条发现状态是 %s:没有证据,不生成利用方案", f.State)
+		return
+	}
+	args := map[string]any{
+		"kind": f.Kind, "where": f.Where, "title": f.Title, "severity": f.Severity,
+	}
+	if rid := firstRequestIDOf(f.Evidence); rid != "" {
+		args["request_id"] = rid
+	}
+	if p, ok := f.Evidence["param"].(string); ok {
+		args["param"] = p
+	}
+	if m, ok := f.Evidence["method"].(string); ok {
+		args["method"] = m
+	}
+	dec := gate.Explain("web_exploit_plan", args)
+	spec := ledger.IntentSpec{
+		Capability: "web_exploit_plan", Args: args,
+		Tier: int(dec.Tier), RequiresApproval: dec.Tier.NeedsHuman(), GateReason: dec.Reason,
+		Rationale:  fmt.Sprintf("为发现 #%d 生成利用方案文本(只写文件,不发请求)", fid),
+		Provenance: "finding:" + fmt.Sprint(fid),
+	}
+	it, created, err := s.cfg.Store.EnsureIntent(r.Context(), eng.ID, spec)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"intent_id": it.ID, "created": created, "tier": it.Tier,
+		"gate_reason": it.GateReason,
+		"next":        "这个动作要你点头:在待办审批里批准后,它会写出方案文本(不会向目标发任何请求)",
+	})
+}
+
+// firstRequestIDOf digs the first request id out of a finding's evidence.
+func firstRequestIDOf(ev map[string]any) string {
+	if ev == nil {
+		return ""
+	}
+	switch v := ev["request_ids"].(type) {
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				return s
+			}
+		}
+	case []string:
+		if len(v) > 0 {
+			return v[0]
+		}
+	case string:
+		return v
+	}
+	return ""
+}
+
+// topFindingHint names the most interesting finding and how to fix it, then says
+// where the exploit plan lives.
+//
+// It deliberately stops at "here is the fix and where to ask for the plan": the
+// plan text is generated on request (tier 2) and run by the operator, never by us.
+func (s *Server) topFindingHint(ctx context.Context, engagementID int64) string {
+	g, err := s.cfg.Store.Graph(ctx, engagementID)
+	if err != nil || len(g.Findings) == 0 {
+		return ""
+	}
+	best := g.Findings[0]
+	for _, f := range g.Findings {
+		if severityRank(f.Severity) > severityRank(best.Severity) {
+			best = f
+		}
+	}
+	out := "最值得先看的一条:" + best.Title + "(" + best.Severity + ")"
+	if r := report.RemediationFor(best.Kind); r != "" {
+		if i := strings.IndexAny(r, "。;"); i > 0 {
+			r = r[:i]
+		}
+		out += ";修法:" + r
+	}
+	out += "。到「发现」页点「生成利用方案(文本)」,我会把怎么验证、PoC 骨架和修法写成一份文档 —— " +
+		"只写文件,不会向目标发任何请求。\n"
+	return out
+}
+
+func severityRank(s string) int {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	}
+	return 0
 }

@@ -123,6 +123,10 @@ func initRegistry() {
 		capabilities = []Capability{
 			// ---- tier 1: read-only evidence ---------------------------------
 			newCapability("probe", "单请求探测:经 guard 发一次请求,记录状态与 request_id", runProbe),
+			newCapability("web_exploit_plan",
+				"把一条已确认/高可信发现写成利用方案文本(思路 + PoC 骨架 + 验证法 + 修复);"+
+					"**不发请求、不执行利用**,文本交操作员审阅 | "+
+					"tier 2, generated text only", exploitPlanCapability),
 			newCapability("fingerprint", "技术指纹:只根据响应头/正文的正则命中推断技术栈", runFingerprint),
 			newCapability("scan", "主检测:安全头、CORS、Cookie、跳转链、暴露面、版本泄露", runScan),
 			newCapability("crawl", "同源 BFS 爬取:发现端点并登记资产,有页数与深度上限", runCrawl),
