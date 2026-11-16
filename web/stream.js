@@ -68,11 +68,34 @@ function pushSteps(incoming) {
   }
   if (s.steps.length > 400) s.steps = s.steps.slice(-400);
   if (!added) return;
-  // Patch only the stream slot: re-rendering the whole chat would throw away
-  // whatever the operator is typing.
-  const slot = document.querySelector("#run-stream-slot");
-  if (slot) {
-    slot.replaceChildren(renderRunStream());
+  // A stop is the end of a turn: the agent's closing words are a chat message that
+  // was written just now, so refetch the conversation instead of rendering steps
+  // into a stale message list.
+  if (incoming.some((ev) => ev && ev.phase === "stop")) {
+    const cs = chatState();
+    cs.key = null;
+    api(`/api/engagements/${state.current.id}/chat?limit=200`)
+      .then((r) => {
+        cs.messages = (r.messages || []).map((m) => ({
+          role: m.role, content: m.content,
+          created_at: m.created_at || "",
+          cards: Array.isArray(m.cards) ? m.cards : [],
+        }));
+        if (state.view === "chat") render();
+      })
+      .catch(() => {});
+  }
+  // Repaint the timeline and the activity bar only: re-rendering the whole chat
+  // would throw away whatever the operator is typing.
+  const log = document.querySelector(".chat-log.timeline");
+  const bar = document.querySelector("#activity-slot");
+  if (log && typeof chatState === "function") {
+    const merged = renderTimeline(chatState().messages, s.steps);
+    log.replaceChildren(...merged.childNodes);
+    if (log.scrollHeight - log.scrollTop - log.clientHeight < 80) {
+      log.scrollTop = log.scrollHeight; // stick to the bottom unless reading back
+    }
+    if (bar) bar.replaceChildren(renderActivityBar());
   } else if (state.view === "chat") {
     render();
   }

@@ -100,9 +100,13 @@ func (s *Store) RunStepsSince(ctx context.Context, engagementID int64, since int
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
+	// Millisecond precision matters for the merged timeline: with second-precision
+	// stamps a step and the closing message tie, and the message (written last)
+	// would sort before the step it summarises.
 	rows, err := s.pool.Query(ctx, `
 		SELECT run_id, seq, phase, intent_id, capability, tier, target, status,
-		       summary, facts, findings, request_id, reason, stop, tags, at
+		       summary, facts, findings, request_id, reason, stop, tags,
+		       to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') || 'Z'
 		  FROM run_steps
 		 WHERE engagement_id = $1 AND seq > $2
 		 ORDER BY seq ASC
@@ -115,14 +119,14 @@ func (s *Store) RunStepsSince(ctx context.Context, engagementID int64, since int
 	for rows.Next() {
 		var st RunStep
 		var tags []byte
-		var at time.Time
+		var at string
 		if err := rows.Scan(&st.RunID, &st.Seq, &st.Phase, &st.IntentID, &st.Capability,
 			&st.Tier, &st.Target, &st.Status, &st.Summary, &st.Facts, &st.Findings,
 			&st.RequestID, &st.Reason, &st.Stop, &tags, &at); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(tags, &st.Tags)
-		st.At = at.UTC().Format(time.RFC3339)
+		st.At = at
 		out = append(out, st)
 	}
 	return out, rows.Err()

@@ -279,3 +279,29 @@ pre.small { font-size: 11px; background: var(--bg); border: 1px solid var(--line
 .stream-reason { color: #d9b84a; }
 .stream-rid { color: #5f6b73; font-size: 11px; }
 .stream-actions { margin-left: auto; display: flex; gap: .35rem; }
+
+/* ---- v0.22: one timeline + the harness activity bar ---------------------- */
+.activity-bar {
+  display: flex; align-items: center; gap: .5rem; padding: .45rem .7rem;
+  border: 1px solid var(--line); border-radius: 999px; margin: .3rem 0 .6rem;
+  font-size: 13px; background: #0f1512;
+}
+.activity-dot { font-size: 10px; }
+.activity-bar.busy  { color: #cfe3a8; } .activity-bar.busy  .activity-dot { color: #9ad54a; animation: pulse 1.2s infinite; }
+.activity-bar.wait  { color: #e8d9a8; } .activity-bar.wait  .activity-dot { color: #d9b84a; }
+.activity-bar.done  { color: var(--muted); } .activity-bar.done  .activity-dot { color: #5b8f6a; }
+.activity-bar.idle  { color: var(--muted); } .activity-bar.idle  .activity-dot { color: #445; }
+.activity-bar .activity-text { flex: 1; }
+
+/* Inline steps inside the conversation: a hairline, not a box - they should read
+   as events in one stream, not as a nested widget. */
+.chat-log.timeline .stream-row {
+  border-left: 2px solid transparent; padding-left: .6rem; margin-left: .2rem;
+}
+.chat-log.timeline .stream-row.wait {
+  border-left-color: #d9b84a; background: rgba(217,184,74,.06); border-radius: 0 6px 6px 0;
+}
+.chat-log.timeline .stream-row.ok { border-left-color: rgba(143,209,79,.35); }
+.chat-log.timeline .stream-row.miss { border-left-color: rgba(138,143,152,.25); }
+.chat-log.timeline .stream-row.bad { border-left-color: #e0666a; }
+.chat-log.timeline .stream-row.reflect { border-left-color: rgba(111,139,161,.35); }

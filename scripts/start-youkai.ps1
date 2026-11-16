@@ -1,4 +1,4 @@
-﻿# start-youkai.ps1 — 一键启动 youkai 控制台。
+# start-youkai.ps1 — 一键启动 youkai 控制台。
 #
 # 为什么需要它:youkaid.exe 是一个控制台服务端,不是 GUI。双击 exe 不会弹窗,
 # 而且它需要 PostgreSQL + YOUKAI_DSN,否则一启动就退出(看着像"打不开")。
@@ -104,6 +104,7 @@ try {
     $tok  = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
     $url  = "http://$addr/#token=$tok"
     Write-Host "控制台:$url" -ForegroundColor Green
+    Write-Host "开工后它会自己往下跑只读检查;遇到要冒险的动作会停下问你,顶部随时可「停下」。" -ForegroundColor DarkGray
     Start-Job -ArgumentList $url, $addr -ScriptBlock {
         param($u, $a)
         foreach ($i in 1..60) {

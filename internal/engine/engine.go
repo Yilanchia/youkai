@@ -133,6 +133,10 @@ type Config struct {
 	// risky step", so a mandate is only honoured where a deployment opts back in.
 	RequireHighAuth bool
 	Now             func() time.Time
+	// NoFinishRun leaves the run row to the caller. A supervised session runs several
+	// rounds against one run: if each round wrote "finished", the UI would read a
+	// stale stop in the middle of the session.
+	NoFinishRun bool
 	// OnStep receives a sanitised summary of every step as it finishes, so a UI can
 	// narrate the run while it happens. Nil means "nobody is watching": the run then
 	// behaves exactly as before. The hook must not block; it is called from the run
@@ -240,7 +244,9 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 			e.emitStep(ev)
 		}
 		if runID != 0 {
-			_ = e.cfg.Store.FinishRun(context.WithoutCancel(ctx), runID, stop, reason, steps, rep.Derived)
+			if !e.cfg.NoFinishRun {
+				_ = e.cfg.Store.FinishRun(context.WithoutCancel(ctx), runID, stop, reason, steps, rep.Derived)
+			}
 		}
 		return rep, nil
 	}
@@ -265,7 +271,9 @@ func (e *Engine) Run(ctx context.Context, runID int64) (Report, error) {
 			rep.Stop = StopError
 			rep.Reason = "derive: " + err.Error()
 			if runID != 0 {
-				_ = e.cfg.Store.FinishRun(context.WithoutCancel(ctx), runID, StopError, rep.Reason, steps, rep.Derived)
+				if !e.cfg.NoFinishRun {
+					_ = e.cfg.Store.FinishRun(context.WithoutCancel(ctx), runID, StopError, rep.Reason, steps, rep.Derived)
+				}
 			}
 			return rep, err
 		}

@@ -39,7 +39,8 @@ func (s *Store) AppendChat(ctx context.Context, engagementID int64, role, conten
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO chat_messages (engagement_id, role, content, cards)
 		VALUES ($1,$2,$3,$4)
-		RETURNING id, engagement_id, role, content, cards, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF')`,
+		RETURNING id, engagement_id, role, content, cards,
+		          to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') || 'Z'`,
 		engagementID, role, content, raw).
 		Scan(&m.ID, &m.EngagementID, &m.Role, &m.Content, &m.Cards, &m.CreatedAt)
 	if err != nil {
@@ -54,7 +55,7 @@ func (s *Store) ChatHistory(ctx context.Context, engagementID int64, limit int) 
 		limit = 200
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, engagement_id, role, content, cards, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF')
+		SELECT id, engagement_id, role, content, cards, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') || 'Z'
 		  FROM chat_messages WHERE engagement_id = $1
 		 ORDER BY id DESC LIMIT $2`, engagementID, limit)
 	if err != nil {

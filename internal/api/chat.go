@@ -46,12 +46,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, eng ledger.E
 		return
 	}
 	if s.cfg.Planner == nil || !s.cfg.Planner.Enabled() {
-		// Not an error: the conversation should still be useful without a model.
-		// The reply tells the operator what to do next, and the UI offers the
-		// wizard as a one-click alternative.
+		// The operator's own words are part of the record even when no model answers:
+		// store the turn so the timeline survives a refresh.
+		_, _ = s.cfg.Store.AppendChat(r.Context(), eng.ID, "user", msg, nil)
+		reply := "我还没有接上模型,所以只能给你指路:点下面的「用向导直接开工」,填一个网址 + 确认授权," +
+			"内置规则就会自己跑只读检查;想让我规划得更聪明,就在「设置」里填一个模型 key(不填也能用)。"
+		_, _ = s.cfg.Store.AppendChat(r.Context(), eng.ID, "assistant", reply, []map[string]any{{
+			"type": "note",
+			"text": "没有 AI 时,只读检查依然会跑;区别只是计划是内置规则排的,不是模型排的。",
+		}})
 		writeJSON(w, http.StatusOK, map[string]any{
-			"reply": "我还没有接上模型,所以只能给你指路:点下面的「用向导直接开工」,填一个网址 + 确认授权," +
-				"内置规则就会自己跑只读检查;想让我规划得更聪明,就在「设置」里填一个模型 key(不填也能用)。",
+			"reply": reply,
 			"cards": []map[string]any{{
 				"type": "note",
 				"text": "没有 AI 时,只读检查依然会跑;区别只是计划是内置规则排的,不是模型排的。",

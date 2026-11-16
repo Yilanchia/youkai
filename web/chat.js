@@ -23,7 +23,7 @@ function renderChat(host) {
     runStreamState().loaded = true;
     loadStream().then(() => { if (state.view === "chat") render(); });
   }
-  const log = el("div", { class: "chat-log" });
+  const log = el("div", { class: "chat-log timeline" });
 
   // ---- the always-visible state line -----------------------------------
   const st = (state.graph && state.graph.stats) || {};
@@ -36,16 +36,8 @@ function renderChat(host) {
     .filter((f) => (f.tags || []).includes("reflection"))
     .map((f) => f.statement);
   const lastReflection = reflections.length ? reflections[reflections.length - 1] : "";
-  const statusLine = (function () {
-    if (parked.length) {
-      return { kind: "wait", text: `停在第 ${parked.length} 个动作前,等你点头` };
-    }
-    if (lastRun && lastRun.status === "running") return { kind: "busy", text: "正在自主跑只读检查…" };
-    if ((st.audit_allowed || 0) === 0) return { kind: "idle", text: "还没开始:说一句话,或点「开始扫描」" };
-    const base = `这一轮跑完了:${st.audit_allowed || 0} 次请求、${st.findings || 0} 条发现`;
-    return { kind: "done", text: lastReflection ? base + " · " + lastReflection : base };
-  })();
-  host.appendChild(el("div", { class: "run-state " + statusLine.kind }, statusLine.text));
+  // The header is the harness bar: what it is doing, plus "停下".
+  host.appendChild(el("div", { id: "activity-slot" }, renderActivityBar()));
 
   // ---- approval cards: the whole point of "stop at risk" -----------------
   for (const it of parked) {
@@ -101,19 +93,10 @@ function renderChat(host) {
     host.appendChild(what);
   }
 
-  // ---- history ----------------------------------------------------------
+  // ---- history: ONE timeline (messages + steps merged by time) ----------
   const paintHistory = (messages) => {
-    log.replaceChildren();
-    if (!messages.length) {
-      log.appendChild(el("div", { class: "empty" },
-        "还没有对话。可以直接说:帮我看看这个站有没有暴露的敏感文件。"));
-      return;
-    }
-    for (const m of messages) {
-      log.appendChild(el("div", { class: "bubble " + (m.role === "user" ? "me" : "ai") }, m.content));
-      const cards = Array.isArray(m.cards) ? m.cards : [];
-      for (const c of cards) log.appendChild(renderChatCard(c));
-    }
+    const merged = renderTimeline(messages, runStreamState().steps);
+    log.replaceChildren(...merged.childNodes);
     log.scrollTop = log.scrollHeight;
   };
 
@@ -145,7 +128,7 @@ function renderChat(host) {
       }
     }
     const cs2 = chatState();
-    cs2.messages.push({ role: "user", content: text, cards: [] });
+    cs2.messages.push({ role: "user", content: text, cards: [], created_at: new Date().toISOString() });
     paintHistory(cs2.messages);
     input.value = "";
     const thinking = el("div", { class: "bubble ai muted" }, "…");
@@ -181,7 +164,7 @@ function renderChat(host) {
     el("div", { class: "actions", style: "justify-content:space-between" },
       el("h3", {}, "对话"),
       status),
-    el("div", { id: "run-stream-slot" }, renderRunStream()),
+
     problem ? el("div", { class: "problem" }, "配置有问题:" + problem) : document.createComment("ok"),
     el("p", { class: "hint" },
       "你说想干什么,AI 把它翻译成一张待确认的卡片;需要冒险的动作会停下来等你点「批准」。" +
@@ -205,6 +188,7 @@ function renderChat(host) {
         .then((r) => {
           cs.messages = (r.messages || []).map((m) => ({
             role: m.role, content: m.content,
+            created_at: m.created_at || "",
             cards: Array.isArray(m.cards) ? m.cards : [],
           }));
           paintHistory(cs.messages);

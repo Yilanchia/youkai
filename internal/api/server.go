@@ -62,6 +62,10 @@ type Config struct {
 	PairSource engine.PairSource
 	// MaxSteps defaults to 10 for UI-triggered runs.
 	MaxSteps int
+	// SuperviseBudget is the total step budget of one supervised session (all
+	// rounds together). Zero means defaultSuperviseBudget. Crossing it is a TRUE
+	// stop: the operator decides whether to spend another session.
+	SuperviseBudget int
 	// Logger defaults to the standard logger.
 	Logger *log.Logger
 }
@@ -92,10 +96,11 @@ type Server struct {
 }
 
 type runState struct {
-	mu   sync.Mutex
-	done bool
-	rep  engine.Report
-	err  string
+	mu     sync.Mutex
+	done   bool
+	rep    engine.Report
+	err    string
+	cancel context.CancelFunc
 }
 
 // New builds the server.
@@ -475,6 +480,16 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request, eng ledger.E
 		writeErr(w, http.StatusBadRequest, "bad run id")
 		return
 	}
+	if len(tail) >= 2 && tail[1] == "cancel" {
+		// "停下" must be instant: it cancels the supervised loop, not just the round
+		// in flight, so the operator can always take the wheel back.
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "POST only")
+			return
+		}
+		s.cancelRun(w, eng, runID)
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeErr(w, http.StatusMethodNotAllowed, "GET only")
 		return
@@ -556,9 +571,9 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request, eng ledger.Eng
 			s.hub.publish("runs", map[string]any{"type": "run_finished", "run_id": run.ID, "engagement": eng.Name})
 		}()
 
-		maxSteps := body.MaxSteps
-		if maxSteps <= 0 {
-			maxSteps = s.cfg.MaxSteps
+		perRound := body.MaxSteps
+		if perRound <= 0 {
+			perRound = s.cfg.MaxSteps
 		}
 		// Every step the engine finishes is narrated to the operator and stored, so a
 		// run is watchable while it happens and readable afterwards. The hook only
@@ -567,47 +582,112 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request, eng ledger.Eng
 			ev.RunID = run.ID
 			s.narrate(eng.ID, ev)
 		}
-		eng2, nerr := engine.New(engine.Config{
-			Store:           s.cfg.Store,
-			EngagementID:    eng.ID,
-			Engagement:      eng.Name,
-			Dispatcher:      s.cfg.Dispatcher,
-			MaxSteps:        maxSteps,
-			SeedURLs:        seeds,
-			AllowedTools:    gate.ReadOnlyCapabilities(),
-			Proposer:        s.proposer(),
-			PairSource:      s.cfg.PairSource,
-			RequireHighAuth: s.cfg.RequireHighAuth,
-			OnStep:          onStep,
-		})
-		if nerr != nil {
-			st.mu.Lock()
-			st.done = true
-			st.err = nerr.Error()
-			st.mu.Unlock()
-			_ = s.cfg.Store.FinishRun(context.Background(), run.ID, engine.StopError, nerr.Error(), 0, 0)
-			return
+
+		// Supervision: a run that stops only because it hit its per-round step cap is
+		// a FALSE stop - there is still read-only work to do, and making the operator
+		// click "continue" every ten steps is what makes an agent feel dead.
+		//
+		// A TRUE stop (needs_approval / sensitive / idle / error / cancel) is never
+		// crossed. That is the whole boundary of this feature.
+		budget := s.cfg.SuperviseBudget
+		if budget <= 0 {
+			budget = defaultSuperviseBudget
 		}
-		rep, err := eng2.Run(context.Background(), run.ID)
+		if budget < perRound {
+			budget = perRound
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		st.mu.Lock()
+		st.cancel = cancel
+		st.mu.Unlock()
+		defer cancel()
+
+		total := 0
+		rep := engine.Report{Stop: engine.StopError, Reason: "no round ran"}
+		status := engine.StopError
+		for round := 1; ; round++ {
+			left := budget - total
+			if left <= 0 {
+				status = engine.StopMaxSteps
+				rep.Reason = fmt.Sprintf("已达本次托管预算(%d 步),点「继续托管」可再跑一程", budget)
+				break
+			}
+			thisRound := perRound
+			if left < thisRound {
+				thisRound = left
+			}
+			eng2, nerr := engine.New(engine.Config{
+				Store:           s.cfg.Store,
+				EngagementID:    eng.ID,
+				Engagement:      eng.Name,
+				Dispatcher:      s.cfg.Dispatcher,
+				MaxSteps:        thisRound,
+				SeedURLs:        seeds,
+				AllowedTools:    gate.ReadOnlyCapabilities(),
+				Proposer:        s.proposer(),
+				PairSource:      s.cfg.PairSource,
+				RequireHighAuth: s.cfg.RequireHighAuth,
+				NoFinishRun:     true,
+				OnStep:          onStep,
+			})
+			if nerr != nil {
+				st.mu.Lock()
+				st.done = true
+				st.err = nerr.Error()
+				st.mu.Unlock()
+				_ = s.cfg.Store.FinishRun(context.Background(), run.ID, engine.StopError, nerr.Error(), total, rep.Derived)
+				return
+			}
+			roundRep, err := eng2.Run(ctx, run.ID)
+			total += len(roundRep.Steps)
+			rep = roundRep
+			rep.Derived += 0
+			if err != nil {
+				status = engine.StopError
+				rep.Reason = err.Error()
+				break
+			}
+			status = roundRep.Stop
+			s.logger.Printf("youkai: supervise round %d: stop=%s steps=%d total=%d/%d",
+				round, status, len(roundRep.Steps), total, budget)
+			if status != engine.StopMaxSteps || ctx.Err() != nil {
+				break
+			}
+
+			// A false stop: say so in the stream, then keep going.
+			s.narrate(eng.ID, engine.StepEvent{
+				RunID: run.ID, Phase: engine.PhaseDerive, Status: "info",
+				Summary: fmt.Sprintf("继续托管:这一轮到了单轮上限,只读工作还没做完(已 %d 步,预算 %d)", total, budget),
+			})
+		}
+
 		st.mu.Lock()
 		st.done = true
 		st.rep = rep
-		if err != nil {
-			st.err = err.Error()
+		if status == engine.StopError && rep.Reason != "" {
+			st.err = rep.Reason
 		}
 		st.mu.Unlock()
-		status := rep.Stop
-		if err != nil {
-			status = engine.StopError
-		}
+		rep.Stop = status
 		// A run that took steps and had every request refused by the passport must
 		// say so, instead of reporting whatever the last optional step complained
 		// about: "nothing was allowed" is the fact the operator needs.
 		if reason, overridden := s.blockedRunReason(context.Background(), eng.Name, rep); overridden {
 			rep.Reason = reason
 		}
-		_ = s.cfg.Store.FinishRun(context.Background(), run.ID, status, rep.Reason, len(rep.Steps), rep.Derived)
-		s.logger.Printf("youkai: run %d finished: %s (%d steps)", run.ID, status, len(rep.Steps))
+		// A real stop is the end of a turn, so the agent says something: what it
+		// found, why it stopped, what the operator can do next. Deterministic text,
+		// no model required - a harness that goes silent at the end is worse than
+		// one that never spoke.
+		//
+		// Written BEFORE FinishRun: a reader that sees the run finished must be able
+		// to find the closing words already in the conversation (otherwise the UI
+		// races and shows a turn that ends in silence).
+		s.summariseStop(context.Background(), eng, status, rep.Reason, total)
+		_ = s.cfg.Store.FinishRun(context.Background(), run.ID, status, rep.Reason, total, rep.Derived)
+		// The stop event is emitted by the engine's own finish(), once per round; a
+		// second one here would show the same line twice in the timeline.
+		s.logger.Printf("youkai: run %d finished: %s (%d steps, budget %d)", run.ID, status, total, budget)
 	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"run_id": run.ID, "status": "running"})
@@ -954,4 +1034,83 @@ func (s *Server) narrate(engagementID int64, ev engine.StepEvent) {
 	out := stored[0]
 	ev.Seq = out.Seq
 	s.publishStep(engagementID, ev)
+}
+
+// defaultSuperviseBudget bounds one supervised session (all rounds together).
+// It exists so "it keeps going by itself" never turns into "it runs forever".
+const defaultSuperviseBudget = 50
+
+// cancelRun stops the supervised loop for a run that is still in flight.
+func (s *Server) cancelRun(w http.ResponseWriter, eng ledger.Engagement, runID int64) {
+	v, ok := s.runMu.Load(runID)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "run %d is not in flight", runID)
+		return
+	}
+	st, _ := v.(*runState)
+	st.mu.Lock()
+	cancel := st.cancel
+	st.mu.Unlock()
+	if cancel == nil {
+		writeErr(w, http.StatusConflict, "run %d has no cancellable session", runID)
+		return
+	}
+	cancel()
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "cancelled": true})
+}
+
+// clipForEvent bounds a reason string the same way the engine does.
+func clipForEvent(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 240 {
+		s = s[:240] + "…"
+	}
+	return s
+}
+
+// summariseStop writes the closing turn into the conversation.
+//
+// It is a template, deliberately: the same words whether or not a model is
+// configured, and it never proposes to do something by itself - it names the
+// choices and waits.
+func (s *Server) summariseStop(ctx context.Context, eng ledger.Engagement, status, reason string, steps int) {
+	if s.cfg.Store == nil {
+		return
+	}
+	g, err := s.cfg.Store.Graph(ctx, eng.ID)
+	if err != nil {
+		return
+	}
+	st := g.Stats
+	var text string
+	switch status {
+	case engine.StopNeedsApproval:
+		text = fmt.Sprintf("我先停在这里:有动作需要你拍板(见上面的步骤流)。"+
+			"到目前为止 %d 次请求、%d 条候选发现。批了我接着跑,不批就跳过它。",
+			st.AuditAllowed, st.Findings)
+	case engine.StopMaxSteps:
+		text = fmt.Sprintf("这一程的托管预算用完了(%d 步)。目前 %d 次请求、%d 条候选发现。"+
+			"还想继续就再点一次「开始扫描」,或者先看结果。", steps, st.AuditAllowed, st.Findings)
+	case engine.StopCancelled:
+		text = fmt.Sprintf("按你的要求停下了。目前 %d 次请求、%d 条候选发现,已经跑过的步骤都在上面。",
+			st.AuditAllowed, st.Findings)
+	case engine.StopSensitive:
+		text = "我停在这里:遇到了疑似敏感数据。这类东西我不会继续读,也不会写进报告正文 —— 请你人工确认。"
+	case engine.StopIdle:
+		text = fmt.Sprintf("这一程只读检查跑完了:%d 次请求、%d 条候选发现(已确认 0 —— candidate 不等于 verified)。"+
+			"接下来可以:看结果、让我继续深挖某条线索,或者换一个目标。", st.AuditAllowed, st.Findings)
+	default:
+		if reason != "" {
+			text = "这一程结束了:" + reason
+		} else {
+			return
+		}
+	}
+	if _, err := s.cfg.Store.AppendChat(ctx, eng.ID, "assistant", text, nil); err != nil {
+		s.logger.Printf("youkai: summary message not stored: %v", err)
+		return
+	}
+	s.hub.publish("chat", map[string]any{"type": "chat_summary", "engagement_id": eng.ID, "text": text})
 }

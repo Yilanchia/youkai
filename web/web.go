@@ -10,5 +10,5 @@ import "embed"
 
 // Files holds the SPA assets.
 //
-//go:embed index.html app.js wizard.js chat.js stream.js style.css
+//go:embed index.html app.js wizard.js chat.js stream.js timeline.js style.css
 var Files embed.FS
